@@ -35,6 +35,7 @@ The installer:
 - installs the Linux udev rule when running on Linux
 - detects the badge serial port
 - copies `PC Chat` to the badge
+- copies the included Mastodon QR image to the badge
 - resets the badge
 
 After install, open `Apps -> PC Chat` on the badge and run:
@@ -129,6 +130,7 @@ Common Windows ports look like `COM3`.
 Replace `<PORT>` with the port from the previous step:
 
 ```sh
+mpremote connect <PORT> cp badge_assets/images/mastodon_qr.png :/images/mastodon_qr.png
 mpremote connect <PORT> cp badge_apps/pc_chat_bridge.py :/apps/pc_chat_bridge.py
 mpremote connect <PORT> reset
 ```
@@ -136,8 +138,11 @@ mpremote connect <PORT> reset
 Examples:
 
 ```sh
+mpremote connect /dev/ttyACM0 cp badge_assets/images/mastodon_qr.png :/images/mastodon_qr.png
 mpremote connect /dev/ttyACM0 cp badge_apps/pc_chat_bridge.py :/apps/pc_chat_bridge.py
+mpremote connect /dev/cu.usbmodem1101 cp badge_assets/images/mastodon_qr.png :/images/mastodon_qr.png
 mpremote connect /dev/cu.usbmodem1101 cp badge_apps/pc_chat_bridge.py :/apps/pc_chat_bridge.py
+mpremote connect COM3 cp badge_assets/images/mastodon_qr.png :/images/mastodon_qr.png
 mpremote connect COM3 cp badge_apps/pc_chat_bridge.py :/apps/pc_chat_bridge.py
 ```
 
@@ -206,7 +211,7 @@ py run_web.py --transport ble --ble-name LC26-1234abcd --ble-code 123456
 - Auto reconnect after suspend or USB replug.
 - BLE connection mode with a 6 digit code shown on the badge screen.
 - Badge-side message notification: visible incoming messages pulse the side/debug LED and flash the screen backlight briefly.
-- Nametag page inside the badge app, using the badge's existing nametag name/image settings while chat keeps running.
+- Nametag page inside the badge app, using the badge's existing nametag name/image settings and the included Mastodon QR image while chat keeps running.
 - Status and serial permission errors are shown in the right-side status panel.
 - Long messages are split into normal chat lines.
 - Outbound radio packets are throttled to one packet every `4` seconds to avoid losing later lines in multi-line art.

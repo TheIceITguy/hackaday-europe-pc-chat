@@ -18,6 +18,9 @@ BADGE_APP = REPO_ROOT / "badge_apps" / "pc_chat_bridge.py"
 UDEV_RULE = REPO_ROOT / "udev" / "99-hackaday-europe-badge.rules"
 BADGE_USB_VID = 0x303A
 BADGE_USB_PID = 0x1001
+BADGE_ASSETS = [
+    (REPO_ROOT / "badge_assets" / "images" / "mastodon_qr.png", ":/images/mastodon_qr.png"),
+]
 
 
 def venv_python() -> Path:
@@ -146,6 +149,9 @@ def copy_badge_app(py: Path, port: str, assume_yes: bool, skip_badge: bool) -> N
         raise SystemExit(f"Missing badge app: {BADGE_APP}")
     if not assume_yes and not confirm(f"Copy PC Chat bridge to badge on {port}?", True):
         return
+    for source, destination in BADGE_ASSETS:
+        if source.exists():
+            run([str(py), "-m", "mpremote", "connect", port, "cp", str(source), destination])
     run([str(py), "-m", "mpremote", "connect", port, "cp", str(BADGE_APP), ":/apps/pc_chat_bridge.py"])
     run([str(py), "-m", "mpremote", "connect", port, "reset"])
     print("Badge app copied. On the badge, open Apps -> PC Chat.")

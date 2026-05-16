@@ -29,6 +29,7 @@ SAFE_MESSAGE_LEN = 60
 MAX_SERIAL_LINE_LEN = 1200
 RADIO_PACKET_INTERVAL_MS = 4000
 BLE_NAME_PREFIX = "LC26-"
+MASTODON_QR_PATH = "images/mastodon_qr.png"
 NOTIFY_FLASH_MS = 900
 NOTIFY_STEP_MS = 110
 NOTIFY_BRIGHT_DUTY = 1023
@@ -128,7 +129,6 @@ class App(BaseApp):
         self.view = "name"
         self.nametag_labels = {}
         self.page = Page()
-        self.page.create_infobar((self._left_info(), "Name + Chat"))
         self.page.create_content()
         self.page.create_menubar(["Chat", "Refresh", "Latest", "Home", "Next"])
         self._apply_name_colors()
@@ -142,34 +142,45 @@ class App(BaseApp):
         username = self._nametag_name()
         show_image, image_path = self._nametag_image_config()
         headshot = None
+        qr = None
         if show_image and image_path:
             try:
                 headshot = graphics.create_image(image_path, self.page.content)
                 headshot.set_style_radius(40, 0)
-                headshot.align(lvgl.ALIGN.LEFT_MID, 10, -8)
+                headshot.set_pos(8, 7)
             except Exception as exc:
                 print("PC Chat nametag image load failed:", exc)
                 headshot = None
+        try:
+            qr = graphics.create_image(MASTODON_QR_PATH, self.page.content)
+            qr.set_pos(320, 7)
+        except Exception as exc:
+            print("PC Chat Mastodon QR load failed:", exc)
+            qr = None
 
         name_label = lvgl.label(self.page.content)
         name_label.set_style_text_color(styles.hackaday_white, 0)
-        name_label.set_style_text_font(self._nametag_font(username), 0)
+        name_left = 116 if headshot else 8
+        name_right = 312 if qr else 420
+        name_width = max(110, name_right - name_left)
+        name_label.set_width(name_width)
+        name_label.set_style_text_align(lvgl.ALIGN.CENTER, 0)
+        name_label.set_style_text_font(self._nametag_font(username, name_width), 0)
         name_label.set_text(username)
-        if headshot:
-            name_label.align_to(headshot, lvgl.ALIGN.OUT_RIGHT_MID, 10, -10)
-        else:
-            name_label.align(lvgl.ALIGN.CENTER, 0, -12)
+        name_label.set_pos(name_left, self._nametag_name_y(username, name_width))
 
         latest_label = lvgl.label(self.page.content)
         latest_label.set_style_text_color(lvgl.color_hex(0xBFD7D0), 0)
         latest_label.set_style_text_font(lvgl.font_montserrat_12, 0)
-        latest_label.set_width(410)
-        latest_label.set_pos(8, 86)
+        latest_label.set_width(412)
+        latest_label.set_pos(8, 106)
 
         self.nametag_labels["name"] = name_label
         self.nametag_labels["latest"] = latest_label
         if headshot:
             self.nametag_labels["image"] = headshot
+        if qr:
+            self.nametag_labels["qr"] = qr
 
     def switch_to_background(self):
         self._stop_notification()
@@ -485,7 +496,7 @@ class App(BaseApp):
             latest_label.set_text("Last: %s: %s" % (left, self._short_text(right, 42)))
         else:
             latest_label.set_text("Last: no chat yet")
-        if self.page is not None:
+        if self.page is not None and hasattr(self.page, "infobar_left"):
             self.page.infobar_left.set_text(self._left_info())
             self.page.infobar_right.set_text("TX %d  RX %d" % (self.tx_count, self.rx_count))
 
@@ -515,15 +526,29 @@ class App(BaseApp):
             image_path = "images/headshots/wrencher.png"
         return show_image, image_path
 
-    def _nametag_font(self, name):
+    def _nametag_font(self, name, width=220):
         longest = 0
         for line in str(name).split("\n"):
             longest = max(longest, len(line))
+        if width < 200 and longest > 14:
+            return lvgl.font_montserrat_16
         if longest > 18:
             return lvgl.font_montserrat_16
+        if width < 200 and longest > 9:
+            return lvgl.font_montserrat_28
         if longest > 11 or "\n" in str(name):
             return lvgl.font_montserrat_28
         return lvgl.font_montserrat_42
+
+    def _nametag_name_y(self, name, width):
+        longest = 0
+        for line in str(name).split("\n"):
+            longest = max(longest, len(line))
+        if width < 200 and longest > 14:
+            return 30
+        if longest > 11 or "\n" in str(name):
+            return 24
+        return 28
 
     def _start_notification(self):
         now = self._ticks_ms()
@@ -606,9 +631,10 @@ class App(BaseApp):
             self.page.scr.set_style_bg_color(dark, 0)
             self.page.flex_container.set_style_bg_color(dark, 0)
             self.page.content.set_style_bg_color(dark, 0)
-            self.page.infobar.set_style_bg_color(styles.hackaday_grey, 0)
-            self.page.infobar_left.set_style_text_color(styles.hackaday_yellow, 0)
-            self.page.infobar_right.set_style_text_color(lvgl.color_hex(0x65d39b), 0)
+            if hasattr(self.page, "infobar"):
+                self.page.infobar.set_style_bg_color(styles.hackaday_grey, 0)
+                self.page.infobar_left.set_style_text_color(styles.hackaday_yellow, 0)
+                self.page.infobar_right.set_style_text_color(lvgl.color_hex(0x65d39b), 0)
             self.page.menubar.set_style_bg_color(styles.hackaday_grey, 0)
             for button in self.page.menubar_buttons:
                 button.set_style_bg_color(styles.hackaday_grey, 0)
