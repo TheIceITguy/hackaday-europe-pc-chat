@@ -14,13 +14,76 @@ This targets the Hackaday Europe firmware chat protocol: LoRa slot `1`, chat por
 
 ## Install
 
-From this repo:
+### Easy Installer
+
+From this repo on Linux or macOS:
+
+```sh
+python3 install.py
+```
+
+On Windows PowerShell:
+
+```powershell
+py install.py
+```
+
+The installer:
+
+- creates a local `.venv`
+- installs `mpremote` and `pyserial`
+- installs the Linux udev rule when running on Linux
+- detects the badge serial port
+- copies `PC Chat` to the badge
+- resets the badge
+
+After install, open `Apps -> PC Chat` on the badge and run:
+
+```sh
+python3 run_web.py
+```
+
+On Windows PowerShell:
+
+```powershell
+py run_web.py
+```
+
+Then open:
+
+```text
+http://127.0.0.1:8765
+```
+
+You can also install and start the web UI in one command:
+
+```sh
+python3 install.py --start-web
+```
+
+On Windows PowerShell:
+
+```powershell
+py install.py --start-web
+```
+
+### Manual Install
+
+Use these steps if the installer cannot detect your badge or you want to run each step yourself.
+
+Install dependencies:
 
 ```sh
 python3 -m pip install -r requirements.txt
 ```
 
-### Linux
+On Windows PowerShell:
+
+```powershell
+py -m pip install -r requirements.txt
+```
+
+#### Linux
 
 Install the included udev rule once so the serial port is writable after every replug:
 
@@ -40,13 +103,7 @@ mpremote devs
 
 Common Linux ports look like `/dev/ttyACM0`.
 
-### macOS
-
-Install dependencies:
-
-```sh
-python3 -m pip install -r requirements.txt
-```
+#### macOS
 
 Find the badge port:
 
@@ -57,15 +114,9 @@ ls /dev/cu.usbmodem* /dev/cu.usbserial* 2>/dev/null
 
 Common macOS ports look like `/dev/cu.usbmodem1101`.
 
-### Windows
+#### Windows
 
-Install Python 3 from <https://www.python.org/> if needed. In PowerShell from this repo:
-
-```powershell
-py -m pip install -r requirements.txt
-```
-
-Find the badge port:
+Install Python 3 from <https://www.python.org/> if needed. In PowerShell, find the badge port:
 
 ```powershell
 mpremote devs
@@ -73,7 +124,7 @@ mpremote devs
 
 Common Windows ports look like `COM3`.
 
-### Copy The Badge App
+#### Copy The Badge App
 
 Replace `<PORT>` with the port from the previous step:
 
@@ -97,13 +148,19 @@ mpremote connect COM3 cp badge_apps/pc_chat_bridge.py :/apps/pc_chat_bridge.py
 3. On the computer, run:
 
 ```sh
-python3 tools/pc_chat_web.py
+python3 run_web.py
 ```
 
 On Windows PowerShell:
 
 ```powershell
-py tools\pc_chat_web.py
+py run_web.py
+```
+
+If you are not using the installer, the direct command is:
+
+```sh
+python3 tools/pc_chat_web.py
 ```
 
 Then open:
@@ -128,13 +185,13 @@ The badge protocol can carry `100` bytes of text, but this companion uses `60` b
 ## Terminal UI
 
 ```sh
-python3 tools/pc_chat_companion.py
+python3 run_terminal.py
 ```
 
 On Windows PowerShell:
 
 ```powershell
-py tools\pc_chat_companion.py
+py run_terminal.py
 ```
 
 Commands:
