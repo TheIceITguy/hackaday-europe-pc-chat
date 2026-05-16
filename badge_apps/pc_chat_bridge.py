@@ -29,7 +29,7 @@ SAFE_MESSAGE_LEN = 60
 MAX_SERIAL_LINE_LEN = 1200
 RADIO_PACKET_INTERVAL_MS = 4000
 BLE_NAME_PREFIX = "LC26-"
-MASTODON_QR_PATH = "images/mastodon_qr.png"
+PERSONAL_QR_PATH = "images/mastodon_qr.png"
 NOTIFY_FLASH_MS = 900
 NOTIFY_STEP_MS = 110
 NOTIFY_BRIGHT_DUTY = 1023
@@ -151,12 +151,13 @@ class App(BaseApp):
             except Exception as exc:
                 print("PC Chat nametag image load failed:", exc)
                 headshot = None
-        try:
-            qr = graphics.create_image(MASTODON_QR_PATH, self.page.content)
-            qr.set_pos(320, 7)
-        except Exception as exc:
-            print("PC Chat Mastodon QR load failed:", exc)
-            qr = None
+        if self._file_exists(PERSONAL_QR_PATH):
+            try:
+                qr = graphics.create_image(PERSONAL_QR_PATH, self.page.content)
+                qr.set_pos(320, 7)
+            except Exception as exc:
+                print("PC Chat personal QR load failed:", exc)
+                qr = None
 
         name_label = lvgl.label(self.page.content)
         name_label.set_style_text_color(styles.hackaday_white, 0)
@@ -525,6 +526,13 @@ class App(BaseApp):
         except Exception:
             image_path = "images/headshots/wrencher.png"
         return show_image, image_path
+
+    def _file_exists(self, path):
+        try:
+            os.stat(path)
+            return True
+        except Exception:
+            return False
 
     def _nametag_font(self, name, width=220):
         longest = 0

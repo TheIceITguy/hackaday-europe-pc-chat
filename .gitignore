@@ -3,3 +3,4 @@ __pycache__/
 .venv/
 venv/
 *.log
+badge_assets/images/mastodon_qr.png
