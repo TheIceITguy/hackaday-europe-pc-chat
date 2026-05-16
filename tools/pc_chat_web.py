@@ -618,14 +618,14 @@ INDEX_HTML = r"""<!doctype html>
     <section id="settingsView" class="settings-view" hidden>
       <div class="settings-header">
         <div>
-          <div class="settings-title">Badge Art Settings</div>
+          <div class="settings-title">Badge Image Art</div>
           <div class="subtitle">Saved in this browser</div>
         </div>
         <button id="closeSettings" class="button secondary" type="button">Back</button>
       </div>
       <div class="settings-body">
         <div class="settings-panel">
-          <div class="section-title">ASCII Art</div>
+          <div class="section-title">Image Art</div>
           <textarea id="artEditor" class="field art-editor" spellcheck="false"></textarea>
           <div id="artMeta" class="art-meta"></div>
           <div class="settings-grid">
@@ -652,7 +652,7 @@ INDEX_HTML = r"""<!doctype html>
     const state = { topic: 1, connected: false, tx: 0, rx: 0, showAll: false };
     const allMessages = [];
     let replyContext = null;
-    const ART_STORAGE_KEY = "pcChatBadgeArt";
+    const ART_STORAGE_KEY = "pcChatBadgeImageArtV2";
     const PACKET_GAP_STORAGE_KEY = "pcChatPacketGap";
     const BLE_NAME_STORAGE_KEY = "pcChatBleName";
     const MAX_ART_LINES = 8;
@@ -661,12 +661,14 @@ INDEX_HTML = r"""<!doctype html>
     const MIN_PACKET_GAP_SECONDS = 1.0;
     const MAX_PACKET_GAP_SECONDS = 15.0;
     const DEFAULT_BADGE_ART = [
-      "+----------------------+",
-      "| HACKADAY EUROPE 2026 |",
-      "| LECCO RADIO BRIDGE  |",
-      "|    < LC26 LORA >    |",
-      "|  )))  868 MHz  (((  |",
-      "+----------------------+"
+      "       /\\",
+      "      /  \\",
+      "     / /\\ \\",
+      " __ / /  \\ \\ __",
+      "/__/ /____\\ \\__\\",
+      "   \\_\\    /_/",
+      "    /_/  \\_\\",
+      "   ~~      ~~"
     ];
 
     function two(n) {
@@ -945,8 +947,8 @@ INDEX_HTML = r"""<!doctype html>
       return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
-    async function sendChatText(topic, text) {
-      await postJSON("/api/send", { topic, text });
+    async function sendChatText(topic, text, preserveSpacing = false) {
+      await postJSON("/api/send", { topic, text, preserve_spacing: preserveSpacing });
     }
 
     async function applyPacketGap(value) {
@@ -1074,7 +1076,7 @@ INDEX_HTML = r"""<!doctype html>
       appendStatus("Sending badge art...");
       try {
         for (const line of lines) {
-          await sendChatText(topic, line);
+          await sendChatText(topic, line, true);
           await wait(120);
         }
         appendStatus("Badge art sent to topic " + two(topic));
@@ -1307,12 +1309,13 @@ class ChatBridge:
         self._add_event("status", {"text": self.status})
         self._add_event("state", self.state())
 
-    def send_message(self, topic: int, text: str) -> None:
+    def send_message(self, topic: int, text: str, preserve_spacing: bool = False) -> None:
         if not self.connected:
             raise RuntimeError("Open Apps -> PC Chat on the badge before sending")
         topic = max(1, min(99, int(topic)))
-        text = text.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
-        if not text:
+        text = text.replace("\t", " ").replace("\r", " ").replace("\n", " ")
+        text = text.rstrip() if preserve_spacing else text.strip()
+        if not text.strip():
             raise ValueError("Message is empty")
         if len(text.encode("utf-8")) > MAX_OUTBOUND_TEXT_BYTES:
             raise ValueError(f"Message is too long; keep it under {MAX_OUTBOUND_TEXT_BYTES} bytes")
@@ -1325,7 +1328,8 @@ class ChatBridge:
                 self._wait_for_packet_slot()
                 self._queue_pending_tx(topic, chunk)
                 try:
-                    self._write_line(f"SEND\t{topic}\t{chunk}")
+                    command = "SENDRAW" if preserve_spacing else "SEND"
+                    self._write_line(f"{command}\t{topic}\t{chunk}")
                 except Exception:
                     self._drop_pending_tx(topic, chunk)
                     raise
@@ -1780,7 +1784,11 @@ class ChatHandler(BaseHTTPRequestHandler):
         try:
             payload = self._read_json()
             if parsed.path == "/api/send":
-                self.server.bridge.send_message(payload.get("topic", 1), payload.get("text", ""))
+                self.server.bridge.send_message(
+                    payload.get("topic", 1),
+                    payload.get("text", ""),
+                    bool(payload.get("preserve_spacing", False)),
+                )
                 self._send_json({"ok": True})
                 return
             if parsed.path == "/api/topic":

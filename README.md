@@ -201,14 +201,17 @@ py run_web.py --transport ble --ble-name LC26-1234abcd --ble-code 123456
 - Quick buttons for topics `01`-`05`.
 - Optional `Show all topics` mode in the browser UI and on the badge.
 - Reply button in the browser UI. Replies are sent as normal chat text with a prefix like `re @nick:`, so other badges do not need this companion app.
-- `Send Art` button for a small row-based ASCII badge graphic sized for the stock Hackaday Europe chat display.
-- Badge art settings page for editing the ASCII art and the seconds between radio packets in the browser.
+- `Send Art` button for a small row-based ASCII image sized for the stock Hackaday Europe chat display.
+- Badge art settings page for editing the ASCII image and the seconds between radio packets in the browser.
 - Auto reconnect after suspend or USB replug.
 - BLE connection mode with a 6 digit code shown on the badge screen.
+- Badge-side message notification: visible incoming messages pulse the side/debug LED and flash the screen backlight briefly.
+- Nametag page inside the badge app, using the badge's existing nametag name/image settings while chat keeps running.
 - Status and serial permission errors are shown in the right-side status panel.
 - Long messages are split into normal chat lines.
 - Outbound radio packets are throttled to one packet every `4` seconds to avoid losing later lines in multi-line art.
-- The badge app can also be used without the PC UI: `F1` posts a message, `F2` toggles between the selected topic and all topics, `F3` jumps to latest, `F4` changes topic, and `F5` exits.
+- The badge chat page can also be used without the PC UI: `F1` posts a message, `F2` toggles between the selected topic and all topics, `F3` jumps to latest, `F4` changes topic, and `F5` opens the nametag page.
+- The badge nametag page uses `F1` to return to chat, `F2` to refresh name/image settings, `F3` to return to latest chat, `F4` to exit, and `F5` to go to the next page.
 - The badge app uses a colorized Hackaday-style UI on the badge display.
 
 The badge protocol can carry `100` bytes of text, but this companion uses `60` byte chunks for better practical compatibility with long unbroken strings like URLs. Multipart messages are sent as normal chat lines with prefixes like `1/3`, `2/3`, and `3/3`.

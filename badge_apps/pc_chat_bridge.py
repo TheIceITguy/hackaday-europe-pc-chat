@@ -9,8 +9,10 @@ import time
 import lvgl
 
 from apps.base_app import BaseApp
+from hardware import board
 from net.net import BROADCAST_ADDRESS, MY_ADDRESS, register_receiver, send
 from net.protocols import NetworkFrame, Protocol
+from ui import graphics
 from ui import styles
 from ui.page import Page
 
@@ -27,6 +29,10 @@ SAFE_MESSAGE_LEN = 60
 MAX_SERIAL_LINE_LEN = 1200
 RADIO_PACKET_INTERVAL_MS = 4000
 BLE_NAME_PREFIX = "LC26-"
+NOTIFY_FLASH_MS = 900
+NOTIFY_STEP_MS = 110
+NOTIFY_BRIGHT_DUTY = 1023
+NOTIFY_DIM_DUTY = 120
 TEXT_CHAT = Protocol(port=6, name="TEXT_CHAT", structdef="!H10s%ds" % MAX_MESSAGE_LEN)
 
 BLE_UART_UUID = bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E") if bluetooth else None
@@ -57,7 +63,10 @@ class App(BaseApp):
         self.poll = select.poll()  # type: ignore
         self.poll.register(sys.stdin, select.POLLIN)  # type: ignore
         self.page = None
+        self.view = "chat"
+        self.nametag_labels = {}
         self.rows = []
+        self.last_chat_row = None
         self.tx_count = 0
         self.rx_count = 0
         self.last_status = "Launch companion on computer"
@@ -80,6 +89,10 @@ class App(BaseApp):
         self.ble_paired = False
         self.ble_status = "BLE off"
         self.ble_notice = None
+        self.notify_until_ms = 0
+        self.notify_next_ms = 0
+        self.notify_on = False
+        self.notify_backlight_duty = None
 
     def start(self):
         super().start()
@@ -91,20 +104,75 @@ class App(BaseApp):
         self._start_ble()
         self.compose_active = False
         self.topic_picker_active = False
+        self.view = "chat"
+        self._show_chat_view()
+        return super().switch_to_foreground()
+
+    def _show_chat_view(self):
         self.page = Page()
         self.page.create_infobar((self._left_info(), "PC Chat"))
         self.page.create_content()
         self.page.add_message_rows(1, 80)
-        self.page.create_menubar(["Post", self._filter_button_label(), "Latest", "Topic", "Home"])
+        self.page.create_menubar(["Post", self._filter_button_label(), "Latest", "Topic", "Next"])
         self._apply_colors()
         self.page.replace_screen()
         self._print("READY\t%s\t%d" % (self._my_alias(), self.active_topic))
-        self._add_row("ready", "F1 Post  F2 All  F4 Topic")
-        self._add_row("ble", self._ble_display_status())
+        if not self.rows:
+            self._add_row("ready", "F1 Post  F2 All  F4 Topic  F5 Name")
+            self._add_row("ble", self._ble_display_status())
         self._refresh(force=True)
-        return super().switch_to_foreground()
+
+    def _show_name_view(self):
+        self.compose_active = False
+        self.topic_picker_active = False
+        self.view = "name"
+        self.nametag_labels = {}
+        self.page = Page()
+        self.page.create_infobar((self._left_info(), "Name + Chat"))
+        self.page.create_content()
+        self.page.create_menubar(["Chat", "Refresh", "Latest", "Home", "Next"])
+        self._apply_name_colors()
+        self._build_name_content()
+        self.page.replace_screen()
+        self._refresh_name_latest()
+
+    def _build_name_content(self):
+        if self.page is None:
+            return
+        username = self._nametag_name()
+        show_image, image_path = self._nametag_image_config()
+        headshot = None
+        if show_image and image_path:
+            try:
+                headshot = graphics.create_image(image_path, self.page.content)
+                headshot.set_style_radius(40, 0)
+                headshot.align(lvgl.ALIGN.LEFT_MID, 10, -8)
+            except Exception as exc:
+                print("PC Chat nametag image load failed:", exc)
+                headshot = None
+
+        name_label = lvgl.label(self.page.content)
+        name_label.set_style_text_color(styles.hackaday_white, 0)
+        name_label.set_style_text_font(self._nametag_font(username), 0)
+        name_label.set_text(username)
+        if headshot:
+            name_label.align_to(headshot, lvgl.ALIGN.OUT_RIGHT_MID, 10, -10)
+        else:
+            name_label.align(lvgl.ALIGN.CENTER, 0, -12)
+
+        latest_label = lvgl.label(self.page.content)
+        latest_label.set_style_text_color(lvgl.color_hex(0xBFD7D0), 0)
+        latest_label.set_style_text_font(lvgl.font_montserrat_12, 0)
+        latest_label.set_width(410)
+        latest_label.set_pos(8, 86)
+
+        self.nametag_labels["name"] = name_label
+        self.nametag_labels["latest"] = latest_label
+        if headshot:
+            self.nametag_labels["image"] = headshot
 
     def switch_to_background(self):
+        self._stop_notification()
         self._restore_usb_debug()
         self.page = None
         return super().switch_to_background()
@@ -113,6 +181,11 @@ class App(BaseApp):
         self._read_usb_lines()
         self._read_ble_lines()
         self._flush_ble_notice()
+        self._run_notification()
+
+        if self.view == "name":
+            self._run_name_view()
+            return
 
         if self.compose_active:
             self._run_compose()
@@ -125,7 +198,7 @@ class App(BaseApp):
             return
 
         if self.badge.keyboard.f5():
-            self.switch_to_background()
+            self._show_name_view()
             return
 
         key = self.badge.keyboard.read_key()
@@ -160,6 +233,29 @@ class App(BaseApp):
         if self.auto_follow and self.page is not None:
             self.page.scroll_bottom()
         self._refresh()
+
+    def _run_name_view(self):
+        if self.badge.keyboard.f1():
+            self.view = "chat"
+            self._show_chat_view()
+            return
+        if self.badge.keyboard.f2():
+            self._show_name_view()
+            return
+        if self.badge.keyboard.f3():
+            self.view = "chat"
+            self._show_chat_view()
+            if self.page is not None:
+                self.page.scroll_bottom()
+            return
+        if self.badge.keyboard.f4():
+            self.switch_to_background()
+            return
+        if self.badge.keyboard.f5():
+            self.view = "chat"
+            self._show_chat_view()
+            return
+        self._refresh_name_latest()
 
     def _start_compose(self):
         if self.page is None:
@@ -228,6 +324,7 @@ class App(BaseApp):
         )
         if self.show_all_topics or topic == self.active_topic:
             self._add_chat_row(topic, alias, text)
+            self._start_notification()
 
     def _read_usb_lines(self):
         while self.poll.poll(0):
@@ -275,18 +372,18 @@ class App(BaseApp):
                 return
             self._set_gap(parts[1])
             return
-        if command == "SEND":
+        if command in ("SEND", "SENDRAW"):
             if len(parts) < 3:
                 self._print("ERR\tusage SEND<TAB>topic<TAB>message")
                 return
             self._set_topic(parts[1])
-            self._send_chat(parts[2])
+            self._send_chat(parts[2], preserve_spacing=(command == "SENDRAW"))
             return
         self._print("ERR\tunknown command")
 
-    def _send_chat(self, text):
-        text = text.strip()
-        if not text:
+    def _send_chat(self, text, preserve_spacing=False):
+        text = text.rstrip() if preserve_spacing else text.strip()
+        if not text.strip():
             self._print("ERR\tempty message")
             return
         chunks = self._split_text_for_chat(text)
@@ -343,7 +440,7 @@ class App(BaseApp):
         self._refresh(force=True)
 
     def _refresh(self, force=False):
-        if self.page is None:
+        if self.page is None or self.view != "chat":
             return
         self.page.infobar_left.set_text(self._left_info())
         self.page.infobar_right.set_text("TX %d  RX %d" % (self.tx_count, self.rx_count))
@@ -352,26 +449,126 @@ class App(BaseApp):
 
     def _add_chat_row(self, topic, alias, text):
         if self.show_all_topics:
-            self._add_row("T%02d %s" % (topic, alias[:6]), text)
+            row = ("T%02d %s" % (topic, alias[:6]), text)
         else:
-            self._add_row(alias[:10], text)
+            row = (alias[:10], text)
+        self.last_chat_row = row
+        self._add_row(row[0], row[1])
+        if self.view == "name":
+            self._refresh_name_latest()
 
     def _add_row(self, left, right):
         self.rows.append((left, right))
         self.rows = self.rows[-6:]
-        if self.page is not None:
+        if self.page is not None and self.view == "chat":
             self.page.populate_message_rows(self.rows)
 
     def _filter_button_label(self):
         return "Topic" if self.show_all_topics else "All"
 
     def _refresh_filter_button(self):
-        if self.page is None:
+        if self.page is None or self.view != "chat":
             return
         try:
             self.page.set_menubar_button_label(1, self._filter_button_label())
         except Exception:
             pass
+
+    def _refresh_name_latest(self):
+        if self.view != "name":
+            return
+        latest_label = self.nametag_labels.get("latest")
+        if latest_label is None:
+            return
+        if self.last_chat_row:
+            left, right = self.last_chat_row
+            latest_label.set_text("Last: %s: %s" % (left, self._short_text(right, 42)))
+        else:
+            latest_label.set_text("Last: no chat yet")
+        if self.page is not None:
+            self.page.infobar_left.set_text(self._left_info())
+            self.page.infobar_right.set_text("TX %d  RX %d" % (self.tx_count, self.rx_count))
+
+    def _short_text(self, text, limit):
+        text = str(text).replace("\n", " ").replace("\r", " ").strip()
+        if len(text) <= limit:
+            return text
+        return text[: limit - 3] + "..."
+
+    def _nametag_name(self):
+        try:
+            name = self.badge.config.get("nametag").decode().strip()
+        except Exception:
+            name = ""
+        if not name:
+            name = self._my_alias()
+        return name
+
+    def _nametag_image_config(self):
+        try:
+            show_image = self.badge.config.get("nametag_show_image").decode().strip() in ("1", "true", "True")
+        except Exception:
+            show_image = False
+        try:
+            image_path = self.badge.config.get("nametag_image").decode().strip()
+        except Exception:
+            image_path = "images/headshots/wrencher.png"
+        return show_image, image_path
+
+    def _nametag_font(self, name):
+        longest = 0
+        for line in str(name).split("\n"):
+            longest = max(longest, len(line))
+        if longest > 18:
+            return lvgl.font_montserrat_16
+        if longest > 11 or "\n" in str(name):
+            return lvgl.font_montserrat_28
+        return lvgl.font_montserrat_42
+
+    def _start_notification(self):
+        now = self._ticks_ms()
+        self.notify_until_ms = now + NOTIFY_FLASH_MS
+        self.notify_next_ms = 0
+        self.notify_on = False
+
+    def _run_notification(self):
+        if not self.notify_until_ms:
+            return
+        now = self._ticks_ms()
+        if self._ticks_diff(now, self.notify_until_ms) >= 0:
+            self._stop_notification()
+            return
+        if self.notify_next_ms and self._ticks_diff(now, self.notify_next_ms) < 0:
+            return
+        self.notify_on = not self.notify_on
+        self._set_notification_outputs(self.notify_on)
+        self.notify_next_ms = now + NOTIFY_STEP_MS
+
+    def _stop_notification(self):
+        self.notify_until_ms = 0
+        self.notify_next_ms = 0
+        self.notify_on = False
+        self._set_notification_outputs(False, restore=True)
+
+    def _set_notification_outputs(self, active, restore=False):
+        try:
+            board.DEBUG_LED.value(1 if active else 0)
+        except Exception:
+            pass
+        if self.page is None:
+            return
+        try:
+            if self.notify_backlight_duty is None:
+                self.notify_backlight_duty = self.badge.display.backlight.duty()
+            if restore:
+                self.badge.display.backlight.duty(self.notify_backlight_duty)
+                self.notify_backlight_duty = None
+            elif active:
+                self.badge.display.backlight.duty(NOTIFY_BRIGHT_DUTY)
+            else:
+                self.badge.display.backlight.duty(NOTIFY_DIM_DUTY)
+        except Exception:
+            self.notify_backlight_duty = None
 
     def _apply_colors(self):
         if self.page is None:
@@ -398,6 +595,25 @@ class App(BaseApp):
                 button.set_style_text_color(styles.hackaday_yellow, 0)
                 button.get_child(0).set_style_text_color(styles.hackaday_yellow, 0)
             self.page.menubar_buttons[1].get_child(0).set_style_text_color(blue, 0)
+        except Exception:
+            pass
+
+    def _apply_name_colors(self):
+        if self.page is None:
+            return
+        dark = lvgl.color_hex(0x101315)
+        try:
+            self.page.scr.set_style_bg_color(dark, 0)
+            self.page.flex_container.set_style_bg_color(dark, 0)
+            self.page.content.set_style_bg_color(dark, 0)
+            self.page.infobar.set_style_bg_color(styles.hackaday_grey, 0)
+            self.page.infobar_left.set_style_text_color(styles.hackaday_yellow, 0)
+            self.page.infobar_right.set_style_text_color(lvgl.color_hex(0x65d39b), 0)
+            self.page.menubar.set_style_bg_color(styles.hackaday_grey, 0)
+            for button in self.page.menubar_buttons:
+                button.set_style_bg_color(styles.hackaday_grey, 0)
+                button.set_style_text_color(styles.hackaday_yellow, 0)
+                button.get_child(0).set_style_text_color(styles.hackaday_yellow, 0)
         except Exception:
             pass
 
