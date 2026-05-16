@@ -18,6 +18,13 @@ From this repo:
 
 ```sh
 python3 -m pip install -r requirements.txt
+```
+
+### Linux
+
+Install the included udev rule once so the serial port is writable after every replug:
+
+```sh
 sudo install -m 0644 udev/99-hackaday-europe-badge.rules /etc/udev/rules.d/
 sudo udevadm control --reload-rules
 sudo udevadm trigger --subsystem-match=tty --action=change
@@ -25,17 +32,62 @@ sudo udevadm trigger --subsystem-match=tty --action=change
 
 Unplug and replug the badge if the serial permissions do not update immediately.
 
-Then copy the bridge app to the badge:
+Find the badge port:
+
+```sh
+mpremote devs
+```
+
+Common Linux ports look like `/dev/ttyACM0`.
+
+### macOS
+
+Install dependencies:
+
+```sh
+python3 -m pip install -r requirements.txt
+```
+
+Find the badge port:
+
+```sh
+mpremote devs
+ls /dev/cu.usbmodem* /dev/cu.usbserial* 2>/dev/null
+```
+
+Common macOS ports look like `/dev/cu.usbmodem1101`.
+
+### Windows
+
+Install Python 3 from <https://www.python.org/> if needed. In PowerShell from this repo:
+
+```powershell
+py -m pip install -r requirements.txt
+```
+
+Find the badge port:
+
+```powershell
+mpremote devs
+```
+
+Common Windows ports look like `COM3`.
+
+### Copy The Badge App
+
+Replace `<PORT>` with the port from the previous step:
+
+```sh
+mpremote connect <PORT> cp badge_apps/pc_chat_bridge.py :/apps/pc_chat_bridge.py
+mpremote connect <PORT> reset
+```
+
+Examples:
 
 ```sh
 mpremote connect /dev/ttyACM0 cp badge_apps/pc_chat_bridge.py :/apps/pc_chat_bridge.py
-mpremote connect /dev/ttyACM0 reset
-```
-
-If your badge is not `/dev/ttyACM0`, check:
-
-```sh
-ls -l /dev/ttyACM* /dev/ttyUSB*
+mpremote connect /dev/cu.usbmodem1101 cp badge_apps/pc_chat_bridge.py :/apps/pc_chat_bridge.py
+mpremote connect COM3 cp badge_apps/pc_chat_bridge.py :/apps/pc_chat_bridge.py
 ```
 
 ## Use The Browser UI
@@ -46,6 +98,12 @@ ls -l /dev/ttyACM* /dev/ttyUSB*
 
 ```sh
 python3 tools/pc_chat_web.py
+```
+
+On Windows PowerShell:
+
+```powershell
+py tools\pc_chat_web.py
 ```
 
 Then open:
@@ -70,7 +128,13 @@ The badge protocol can carry `100` bytes of text, but this companion uses `60` b
 ## Terminal UI
 
 ```sh
-python3 tools/pc_chat_companion.py /dev/ttyACM0
+python3 tools/pc_chat_companion.py
+```
+
+On Windows PowerShell:
+
+```powershell
+py tools\pc_chat_companion.py
 ```
 
 Commands:
@@ -84,5 +148,6 @@ Commands:
 
 - Keep `PC Chat` open on the badge while using the computer companion.
 - Your nick is the badge `alias`; the stock chat payload has a 10-character alias field.
+- The browser and terminal companions auto-detect Linux, macOS, and Windows serial ports. You can still pass the port explicitly, for example `python3 tools/pc_chat_web.py /dev/ttyACM0`, `python3 tools/pc_chat_web.py /dev/cu.usbmodem1101`, or `py tools\pc_chat_web.py COM3`.
 - On Linux, the included udev rule should make the badge serial port writable automatically after every replug.
 - If you still get `Permission denied` for `/dev/ttyACM0`, replug the badge and check that `/etc/udev/rules.d/99-hackaday-europe-badge.rules` exists.

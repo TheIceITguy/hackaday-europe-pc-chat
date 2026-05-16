@@ -12,10 +12,13 @@ import time
 
 try:
     import serial
+    from serial.tools import list_ports
 except ImportError as exc:  # pragma: no cover
     raise SystemExit("pyserial is required: python3 -m pip install pyserial") from exc
 
 
+BADGE_USB_VID = 0x303A
+BADGE_USB_PID = 0x1001
 # The radio protocol can carry 100 bytes of chat text, but long unbroken
 # strings like URLs are easier for the stock badge UI and mesh if fragmented.
 MAX_CHAT_BYTES = 60
@@ -24,8 +27,33 @@ CHUNK_SEND_DELAY_S = 0.12
 
 
 def find_port() -> str | None:
-    ports = sorted(glob.glob("/dev/ttyACM*") + glob.glob("/dev/ttyUSB*"))
-    return ports[0] if ports else None
+    ports = list(list_ports.comports())
+    for port in ports:
+        if port.vid == BADGE_USB_VID and port.pid == BADGE_USB_PID:
+            return port.device
+    if ports:
+        usb_ports = [
+            port.device
+            for port in ports
+            if "usb" in (port.device or "").lower()
+            or "usb" in (port.description or "").lower()
+            or "com" in (port.device or "").lower()
+        ]
+        if usb_ports:
+            return sorted(usb_ports)[0]
+
+    patterns = [
+        "/dev/ttyACM*",
+        "/dev/ttyUSB*",
+        "/dev/cu.usbmodem*",
+        "/dev/cu.usbserial*",
+        "/dev/tty.usbmodem*",
+        "/dev/tty.usbserial*",
+    ]
+    fallback_ports: list[str] = []
+    for pattern in patterns:
+        fallback_ports.extend(glob.glob(pattern))
+    return sorted(fallback_ports)[0] if fallback_ports else None
 
 
 def split_text_for_chat(text: str, byte_limit: int = MAX_CHAT_BYTES) -> list[str]:
