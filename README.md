@@ -228,11 +228,13 @@ py run_web.py --transport ble --ble-name LC26-1234abcd --ble-code 123456
 - BLE connection mode with a 6 digit code shown on the badge screen.
 - Badge-side message notification: visible incoming messages pulse the side/debug LED and flash the screen backlight briefly.
 - Nametag page inside the badge app, using the badge's existing nametag name/image settings and an optional personal QR image while chat keeps running.
+- Optional upside-down chat page for badges worn inverted. The nametag page always stays upright.
 - Status and serial permission errors are shown in the right-side status panel.
 - Long messages are split into normal chat lines.
 - Outbound radio packets are throttled to one packet every `4` seconds to avoid losing later lines in multi-line art.
 - The badge chat page can also be used without the PC UI: `F1` posts a message, `F2` toggles between the selected topic and all topics, `F3` jumps to latest, `F4` changes topic, and `F5` opens the nametag page.
-- The badge nametag page uses `F1` to return to chat, `F2` to refresh name/image settings, `F3` to return to latest chat, `F4` to exit, and `F5` to go to the next page.
+- The badge nametag page uses `F1` to return to chat, `F2` to refresh name/image settings, `F3` to return to latest chat, `F4` to exit, and `F5` to open settings.
+- The badge settings page uses `F1` for chat, `F2` to toggle upside-down chat mode, `F3` for nametag, `F4` to exit, and `F5` for the next page.
 - The badge app uses a colorized Hackaday-style UI on the badge display.
 
 The badge protocol can carry `100` bytes of text, but this companion uses `60` byte chunks for better practical compatibility with long unbroken strings like URLs. Multipart messages are sent as normal chat lines with prefixes like `1/3`, `2/3`, and `3/3`.

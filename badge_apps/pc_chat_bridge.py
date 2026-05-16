@@ -41,6 +41,9 @@ BLE_UART_TX = bluetooth.UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E") if bluetoot
 BLE_UART_RX = bluetooth.UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E") if bluetooth else None
 BLE_NOTIFY_CHUNK = 20
 BLE_WRITE_BUFFER = 256
+CONFIG_CHAT_FLIP = "pc_chat_flip_chat"
+DISPLAY_NORMAL_ROTATION = lvgl.DISPLAY_ROTATION._270
+DISPLAY_FLIPPED_ROTATION = lvgl.DISPLAY_ROTATION._90
 
 _IRQ_CENTRAL_CONNECT = 1
 _IRQ_CENTRAL_DISCONNECT = 2
@@ -66,8 +69,11 @@ class App(BaseApp):
         self.page = None
         self.view = "chat"
         self.nametag_labels = {}
+        self.settings_labels = {}
         self.rows = []
         self.last_chat_row = None
+        self.chat_flipped = self._load_chat_flip()
+        self.display_flipped = False
         self.tx_count = 0
         self.rx_count = 0
         self.last_status = "Launch companion on computer"
@@ -110,6 +116,8 @@ class App(BaseApp):
         return super().switch_to_foreground()
 
     def _show_chat_view(self):
+        self.view = "chat"
+        self._set_display_rotation(self.chat_flipped)
         self.page = Page()
         self.page.create_infobar((self._left_info(), "PC Chat"))
         self.page.create_content()
@@ -127,14 +135,28 @@ class App(BaseApp):
         self.compose_active = False
         self.topic_picker_active = False
         self.view = "name"
+        self._set_display_rotation(False)
         self.nametag_labels = {}
         self.page = Page()
         self.page.create_content()
-        self.page.create_menubar(["Chat", "Refresh", "Latest", "Home", "Next"])
+        self.page.create_menubar(["Chat", "Refresh", "Latest", "Home", "Setup"])
         self._apply_name_colors()
         self._build_name_content()
         self.page.replace_screen()
         self._refresh_name_latest()
+
+    def _show_settings_view(self):
+        self.compose_active = False
+        self.topic_picker_active = False
+        self.view = "settings"
+        self._set_display_rotation(False)
+        self.settings_labels = {}
+        self.page = Page()
+        self.page.create_content()
+        self.page.create_menubar(["Chat", self._flip_button_label(), "Name", "Home", "Next"])
+        self._apply_name_colors()
+        self._build_settings_content()
+        self.page.replace_screen()
 
     def _build_name_content(self):
         if self.page is None:
@@ -183,8 +205,35 @@ class App(BaseApp):
         if qr:
             self.nametag_labels["qr"] = qr
 
+    def _build_settings_content(self):
+        if self.page is None:
+            return
+        title = lvgl.label(self.page.content)
+        title.set_style_text_color(styles.hackaday_yellow, 0)
+        title.set_style_text_font(lvgl.font_montserrat_16, 0)
+        title.set_text("PC Chat Settings")
+        title.set_pos(8, 8)
+
+        status = lvgl.label(self.page.content)
+        status.set_style_text_color(styles.hackaday_white, 0)
+        status.set_style_text_font(lvgl.font_montserrat_28, 0)
+        status.set_width(412)
+        status.set_text(self._flip_status_text())
+        status.set_pos(8, 38)
+
+        note = lvgl.label(self.page.content)
+        note.set_style_text_color(lvgl.color_hex(0xBFD7D0), 0)
+        note.set_style_text_font(lvgl.font_montserrat_12, 0)
+        note.set_width(412)
+        note.set_text("Nametag stays upright")
+        note.set_pos(8, 82)
+
+        self.settings_labels["status"] = status
+        self.settings_labels["note"] = note
+
     def switch_to_background(self):
         self._stop_notification()
+        self._set_display_rotation(False)
         self._restore_usb_debug()
         self.page = None
         return super().switch_to_background()
@@ -197,6 +246,10 @@ class App(BaseApp):
 
         if self.view == "name":
             self._run_name_view()
+            return
+
+        if self.view == "settings":
+            self._run_settings_view()
             return
 
         if self.compose_active:
@@ -264,10 +317,26 @@ class App(BaseApp):
             self.switch_to_background()
             return
         if self.badge.keyboard.f5():
-            self.view = "chat"
-            self._show_chat_view()
+            self._show_settings_view()
             return
         self._refresh_name_latest()
+
+    def _run_settings_view(self):
+        if self.badge.keyboard.f1():
+            self._show_chat_view()
+            return
+        if self.badge.keyboard.f2():
+            self._toggle_chat_flip()
+            return
+        if self.badge.keyboard.f3():
+            self._show_name_view()
+            return
+        if self.badge.keyboard.f4():
+            self.switch_to_background()
+            return
+        if self.badge.keyboard.f5():
+            self._show_chat_view()
+            return
 
     def _start_compose(self):
         if self.page is None:
@@ -486,6 +555,26 @@ class App(BaseApp):
         except Exception:
             pass
 
+    def _flip_button_label(self):
+        return "Normal" if self.chat_flipped else "Flip"
+
+    def _flip_status_text(self):
+        if self.chat_flipped:
+            return "Chat: upside down"
+        return "Chat: normal"
+
+    def _toggle_chat_flip(self):
+        self.chat_flipped = not self.chat_flipped
+        self._save_chat_flip()
+        status = self.settings_labels.get("status")
+        if status is not None:
+            status.set_text(self._flip_status_text())
+        if self.page is not None:
+            try:
+                self.page.set_menubar_button_label(1, self._flip_button_label())
+            except Exception:
+                pass
+
     def _refresh_name_latest(self):
         if self.view != "name":
             return
@@ -533,6 +622,32 @@ class App(BaseApp):
             return True
         except Exception:
             return False
+
+    def _load_chat_flip(self):
+        try:
+            value = self.badge.config.get(CONFIG_CHAT_FLIP, b"false").decode().strip()
+            return value in ("1", "true", "True", "yes", "on")
+        except Exception:
+            return False
+
+    def _save_chat_flip(self):
+        try:
+            self.badge.config.set(CONFIG_CHAT_FLIP, b"true" if self.chat_flipped else b"false")
+            self.badge.config.flush()
+        except Exception:
+            pass
+
+    def _set_display_rotation(self, flipped):
+        rotation = DISPLAY_FLIPPED_ROTATION if flipped else DISPLAY_NORMAL_ROTATION
+        try:
+            if hasattr(lvgl, "display_get_default"):
+                display = lvgl.display_get_default()
+            else:
+                display = lvgl.disp_get_default()
+            display.set_rotation(rotation)
+            self.display_flipped = bool(flipped)
+        except Exception as exc:
+            print("PC Chat display rotation failed:", exc)
 
     def _nametag_font(self, name, width=220):
         longest = 0
