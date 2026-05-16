@@ -177,6 +177,7 @@ The web UI binds to `127.0.0.1` by default, so it is only reachable from your ow
 - Quick buttons for topics `01`-`05`.
 - Optional `Show all topics` mode.
 - Reply button in the browser UI. Replies are sent as normal chat text with a prefix like `re @nick:`, so other badges do not need this companion app.
+- `Send LC26 Art` button for a small row-based ASCII badge graphic sized for the stock Hackaday Europe chat display.
 - Auto reconnect after suspend or USB replug.
 - Status and serial permission errors are shown in the right-side status panel.
 - Long messages are split into normal chat lines.

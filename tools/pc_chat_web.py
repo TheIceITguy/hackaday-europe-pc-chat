@@ -313,6 +313,9 @@ INDEX_HTML = r"""<!doctype html>
       cursor: not-allowed;
       opacity: .55;
     }
+    .button.full {
+      width: 100%;
+    }
     .facts {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -455,6 +458,10 @@ INDEX_HTML = r"""<!doctype html>
           </div>
         </div>
         <div>
+          <div class="section-title">Badge Art</div>
+          <button id="artButton" class="button secondary full" type="button">Send LC26 Art</button>
+        </div>
+        <div>
           <div class="section-title">Last Signal</div>
           <div class="facts">
             <div class="fact"><span>RSSI</span><strong id="rssiValue">-</strong></div>
@@ -478,6 +485,13 @@ INDEX_HTML = r"""<!doctype html>
     const state = { topic: 1, connected: false, tx: 0, rx: 0, showAll: false };
     const allMessages = [];
     let replyContext = null;
+    const BADGE_ART_LINES = [
+      ".--[ LC26 ]--.",
+      "| HACKADAY EU |",
+      "|   RADIO ON  |",
+      "'--)))--(((--'",
+      "LECCO // 2026"
+    ];
 
     function two(n) {
       const value = Number(n || 1);
@@ -628,6 +642,7 @@ INDEX_HTML = r"""<!doctype html>
       el("rssiValue").textContent = data.rssi || "-";
       el("snrValue").textContent = data.snr || "-";
       el("sendButton").disabled = !data.connected;
+      el("artButton").disabled = !data.connected;
       updateComposerHint();
       document.querySelectorAll(".topic-chip").forEach((button) => {
         button.classList.toggle("active", Number(button.dataset.topic) === Number(data.topic || 1));
@@ -648,6 +663,14 @@ INDEX_HTML = r"""<!doctype html>
       return res.json();
     }
 
+    function wait(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function sendChatText(topic, text) {
+      await postJSON("/api/send", { topic, text });
+    }
+
     async function setTopic(topic) {
       const value = Math.max(1, Math.min(99, Number(topic || 1)));
       el("topicInput").value = value;
@@ -661,7 +684,7 @@ INDEX_HTML = r"""<!doctype html>
       const topic = replyContext ? Number(replyContext.topic) : Number(el("topicInput").value);
       const outgoing = prefixedReplyText(text);
       try {
-        await postJSON("/api/send", { topic, text: outgoing });
+        await sendChatText(topic, outgoing);
         input.value = "";
         clearReply();
         input.focus();
@@ -702,6 +725,25 @@ INDEX_HTML = r"""<!doctype html>
     });
 
     el("clearReply").addEventListener("click", clearReply);
+
+    el("artButton").addEventListener("click", async () => {
+      const button = el("artButton");
+      const topic = Number(el("topicInput").value);
+      clearReply();
+      button.disabled = true;
+      appendStatus("Sending LC26 art...");
+      try {
+        for (const line of BADGE_ART_LINES) {
+          await sendChatText(topic, line);
+          await wait(180);
+        }
+        appendStatus("LC26 art sent to topic " + two(topic));
+      } catch (err) {
+        appendStatus(err.message);
+      } finally {
+        button.disabled = !state.connected;
+      }
+    });
 
     const events = new EventSource("/api/events");
     events.addEventListener("state", (event) => applyState(JSON.parse(event.data)));
