@@ -30,6 +30,8 @@ MAX_SERIAL_LINE_LEN = 1200
 RADIO_PACKET_INTERVAL_MS = 4000
 BLE_NAME_PREFIX = "LC26-"
 PERSONAL_QR_PATH = "images/mastodon_qr.png"
+DOWN_FLIP_TAP_COUNT = 3
+DOWN_FLIP_WINDOW_MS = 900
 NOTIFY_FLASH_MS = 900
 NOTIFY_STEP_MS = 110
 NOTIFY_BRIGHT_DUTY = 1023
@@ -74,6 +76,8 @@ class App(BaseApp):
         self.last_chat_row = None
         self.chat_flipped = self._load_chat_flip()
         self.display_flipped = False
+        self.down_flip_taps = 0
+        self.down_flip_first_ms = 0
         self.tx_count = 0
         self.rx_count = 0
         self.last_status = "Launch companion on computer"
@@ -262,7 +266,7 @@ class App(BaseApp):
             self._refresh()
             return
 
-        if self.badge.keyboard.f5():
+        if self._chat_f(5):
             self._show_name_view()
             return
 
@@ -271,27 +275,34 @@ class App(BaseApp):
         if self.badge.keyboard.shift_pressed:
             scroll_amount *= 5
         if key == self.badge.keyboard.UP:
+            self._reset_down_flip_shortcut()
             self.page.scroll_up(scroll_amount)
             self.auto_follow = False
         elif key == self.badge.keyboard.DOWN:
+            if self._handle_down_flip_shortcut():
+                return
             self.page.scroll_down(scroll_amount)
             self.auto_follow = False
         elif key == self.badge.keyboard.LEFT:
+            self._reset_down_flip_shortcut()
             self._set_topic(str(self.active_topic - 1))
         elif key == self.badge.keyboard.RIGHT:
+            self._reset_down_flip_shortcut()
             self._set_topic(str(self.active_topic + 1))
+        elif key is not None:
+            self._reset_down_flip_shortcut()
 
-        if self.badge.keyboard.f1():
+        if self._chat_f(1):
             self._start_compose()
             return
-        if self.badge.keyboard.f2():
+        if self._chat_f(2):
             self._toggle_topic_filter()
             return
-        if self.badge.keyboard.f3():
+        if self._chat_f(3):
             self.auto_follow = True
             if self.page is not None:
                 self.page.scroll_bottom()
-        if self.badge.keyboard.f4():
+        if self._chat_f(4):
             self._start_topic_picker()
             return
 
@@ -352,7 +363,7 @@ class App(BaseApp):
             self.page.close_text_box()
             self.compose_active = False
             return
-        if self.badge.keyboard.f1() or key == self.badge.keyboard.ENTER:
+        if self._chat_f(1) or key == self.badge.keyboard.ENTER:
             message_text = self.page.close_text_box()
             self.compose_active = False
             if message_text:
@@ -373,7 +384,7 @@ class App(BaseApp):
             self.page.close_text_box()
             self.topic_picker_active = False
             return
-        if self.badge.keyboard.f4() or key == self.badge.keyboard.ENTER:
+        if self._chat_f(4) or key == self.badge.keyboard.ENTER:
             topic_text = self.page.close_text_box()
             self.topic_picker_active = False
             self._set_topic(topic_text)
@@ -574,6 +585,44 @@ class App(BaseApp):
                 self.page.set_menubar_button_label(1, self._flip_button_label())
             except Exception:
                 pass
+
+    def _handle_down_flip_shortcut(self):
+        now = self._ticks_ms()
+        if (
+            not self.down_flip_first_ms
+            or self._ticks_diff(now, self.down_flip_first_ms) > DOWN_FLIP_WINDOW_MS
+        ):
+            self.down_flip_first_ms = now
+            self.down_flip_taps = 1
+            return False
+
+        self.down_flip_taps += 1
+        if self.down_flip_taps < DOWN_FLIP_TAP_COUNT:
+            return False
+
+        self._reset_down_flip_shortcut()
+        self._toggle_chat_flip()
+        self._show_chat_view()
+        return True
+
+    def _reset_down_flip_shortcut(self):
+        self.down_flip_taps = 0
+        self.down_flip_first_ms = 0
+
+    def _chat_f(self, which):
+        if self.chat_flipped:
+            which = 6 - which
+        if which == 1:
+            return self.badge.keyboard.f1()
+        if which == 2:
+            return self.badge.keyboard.f2()
+        if which == 3:
+            return self.badge.keyboard.f3()
+        if which == 4:
+            return self.badge.keyboard.f4()
+        if which == 5:
+            return self.badge.keyboard.f5()
+        return False
 
     def _refresh_name_latest(self):
         if self.view != "name":
