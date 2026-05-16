@@ -420,6 +420,11 @@ INDEX_HTML = r"""<!doctype html>
       return String(Math.max(1, Math.min(99, value))).padStart(2, "0");
     }
 
+    function formatTime(timestamp) {
+      const date = timestamp ? new Date(timestamp * 1000) : new Date();
+      return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    }
+
     function appendMessage(data) {
       allMessages.push(data);
       if (allMessages.length > 500) allMessages.shift();
@@ -435,7 +440,7 @@ INDEX_HTML = r"""<!doctype html>
       sender.className = "sender";
       sender.textContent = data.alias || data.source || "badge";
       const detail = document.createElement("span");
-      detail.textContent = "topic " + two(data.topic) + (data.rssi ? "  " + data.rssi + " dBm" : "");
+      detail.textContent = formatTime(data.timestamp) + "  topic " + two(data.topic) + (data.rssi ? "  " + data.rssi + " dBm" : "");
       const text = document.createElement("div");
       text.className = "text";
       text.textContent = data.text || "";
@@ -793,6 +798,7 @@ class ChatBridge:
                     "topic": topic,
                     "alias": parts[3],
                     "text": text,
+                    "timestamp": time.time(),
                 },
             )
             self._add_event("state", self.state())
@@ -811,6 +817,7 @@ class ChatBridge:
                     "text": parts[5],
                     "rssi": parts[6],
                     "snr": parts[7],
+                    "timestamp": time.time(),
                 },
             )
             self._add_event("state", self.state())
@@ -851,6 +858,7 @@ class ChatBridge:
                 "topic": topic,
                 "alias": self.alias or "me",
                 "text": text,
+                "timestamp": time.time(),
             },
         )
         self._add_event("state", self.state())
