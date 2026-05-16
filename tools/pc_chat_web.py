@@ -29,7 +29,10 @@ BADGE_USB_PID = 0x1001
 # strings like URLs are easier for the stock badge UI and mesh if fragmented.
 MAX_CHAT_BYTES = 60
 MAX_OUTBOUND_TEXT_BYTES = 1200
-CHUNK_SEND_DELAY_S = 0.12
+DEFAULT_PACKET_SEND_INTERVAL_S = 4.0
+MIN_PACKET_SEND_INTERVAL_S = 1.0
+MAX_PACKET_SEND_INTERVAL_S = 15.0
+HANDSHAKE_PING_INTERVAL_S = 1.0
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -63,7 +66,7 @@ INDEX_HTML = r"""<!doctype html>
       letter-spacing: 0;
       overflow: hidden;
     }
-    button, input {
+    button, input, textarea {
       font: inherit;
       letter-spacing: 0;
     }
@@ -313,8 +316,10 @@ INDEX_HTML = r"""<!doctype html>
       cursor: not-allowed;
       opacity: .55;
     }
-    .button.full {
-      width: 100%;
+    .art-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
     }
     .facts {
       display: grid;
@@ -381,6 +386,90 @@ INDEX_HTML = r"""<!doctype html>
     #composer {
       min-height: 42px;
     }
+    .settings-view {
+      position: fixed;
+      inset: 0;
+      z-index: 10;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      background: var(--bg);
+      color: var(--text);
+    }
+    .settings-view[hidden] {
+      display: none;
+    }
+    .settings-header {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      background: #191d20;
+    }
+    .settings-title {
+      font-size: 18px;
+      font-weight: 650;
+    }
+    .settings-body {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(260px, 360px);
+      gap: 16px;
+      padding: 16px;
+      overflow: auto;
+    }
+    .settings-panel {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .art-editor {
+      width: 100%;
+      min-height: 260px;
+      resize: vertical;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      line-height: 1.35;
+      white-space: pre;
+    }
+    .art-preview {
+      min-height: 260px;
+      margin: 0;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #101315;
+      color: var(--accent);
+      padding: 12px;
+      overflow: auto;
+      font: 14px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre;
+    }
+    .settings-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+      flex-wrap: wrap;
+    }
+    .settings-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(90px, 130px);
+      gap: 8px;
+      align-items: end;
+    }
+    .settings-grid label {
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .settings-grid label span {
+      display: block;
+      margin-bottom: 5px;
+    }
+    .art-meta {
+      min-height: 20px;
+      color: var(--muted);
+      font-size: 13px;
+    }
     @media (max-width: 760px) {
       header {
         grid-template-columns: 1fr;
@@ -407,6 +496,12 @@ INDEX_HTML = r"""<!doctype html>
       }
       .message {
         width: 100%;
+      }
+      .settings-body {
+        grid-template-columns: 1fr;
+      }
+      .settings-header {
+        grid-template-columns: 1fr;
       }
     }
   </style>
@@ -459,7 +554,10 @@ INDEX_HTML = r"""<!doctype html>
         </div>
         <div>
           <div class="section-title">Badge Art</div>
-          <button id="artButton" class="button secondary full" type="button">Send LC26 Art</button>
+          <div class="art-actions">
+            <button id="artButton" class="button secondary" type="button">Send Art</button>
+            <button id="settingsButton" class="button secondary" type="button">Settings</button>
+          </div>
         </div>
         <div>
           <div class="section-title">Last Signal</div>
@@ -478,6 +576,36 @@ INDEX_HTML = r"""<!doctype html>
       <input id="composer" class="field" maxlength="1200" autocomplete="off" placeholder="Write a badge chat message">
       <button id="sendButton" class="button" type="button">Send</button>
     </footer>
+    <section id="settingsView" class="settings-view" hidden>
+      <div class="settings-header">
+        <div>
+          <div class="settings-title">Badge Art Settings</div>
+          <div class="subtitle">Saved in this browser</div>
+        </div>
+        <button id="closeSettings" class="button secondary" type="button">Back</button>
+      </div>
+      <div class="settings-body">
+        <div class="settings-panel">
+          <div class="section-title">ASCII Art</div>
+          <textarea id="artEditor" class="field art-editor" spellcheck="false"></textarea>
+          <div id="artMeta" class="art-meta"></div>
+          <div class="settings-grid">
+            <label>
+              <span>Seconds between radio packets</span>
+              <input id="packetGapInput" class="field" type="number" min="1" max="15" step="0.5" value="4">
+            </label>
+          </div>
+          <div class="settings-actions">
+            <button id="resetArt" class="button secondary" type="button">Reset</button>
+            <button id="saveArt" class="button" type="button">Save</button>
+          </div>
+        </div>
+        <div class="settings-panel">
+          <div class="section-title">Preview</div>
+          <pre id="artPreview" class="art-preview"></pre>
+        </div>
+      </div>
+    </section>
   </div>
   <script>
     const el = (id) => document.getElementById(id);
@@ -485,12 +613,20 @@ INDEX_HTML = r"""<!doctype html>
     const state = { topic: 1, connected: false, tx: 0, rx: 0, showAll: false };
     const allMessages = [];
     let replyContext = null;
-    const BADGE_ART_LINES = [
-      ".--[ LC26 ]--.",
-      "| HACKADAY EU |",
-      "|   RADIO ON  |",
-      "'--)))--(((--'",
-      "LECCO // 2026"
+    const ART_STORAGE_KEY = "pcChatBadgeArt";
+    const PACKET_GAP_STORAGE_KEY = "pcChatPacketGap";
+    const MAX_ART_LINES = 8;
+    const MAX_ART_LINE_CHARS = 32;
+    const DEFAULT_PACKET_GAP_SECONDS = 4.0;
+    const MIN_PACKET_GAP_SECONDS = 1.0;
+    const MAX_PACKET_GAP_SECONDS = 15.0;
+    const DEFAULT_BADGE_ART = [
+      "+----------------------+",
+      "| HACKADAY EUROPE 2026 |",
+      "| LECCO RADIO BRIDGE  |",
+      "|    < LC26 LORA >    |",
+      "|  )))  868 MHz  (((  |",
+      "+----------------------+"
     ];
 
     function two(n) {
@@ -512,6 +648,85 @@ INDEX_HTML = r"""<!doctype html>
       allMessages.push(data);
       if (allMessages.length > 500) allMessages.shift();
       renderMessages();
+    }
+
+    function defaultArtText() {
+      return DEFAULT_BADGE_ART.join("\n");
+    }
+
+    function sanitizeArtText(value) {
+      const lines = String(value || "")
+        .replace(/\r/g, "")
+        .replace(/\t/g, "  ")
+        .split("\n")
+        .slice(0, MAX_ART_LINES)
+        .map((line) => line.replace(/[^\x20-\x7E]/g, "").slice(0, MAX_ART_LINE_CHARS).trimEnd());
+      while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+      return lines.join("\n");
+    }
+
+    function loadArtText() {
+      try {
+        const saved = localStorage.getItem(ART_STORAGE_KEY);
+        const clean = sanitizeArtText(saved || defaultArtText());
+        return clean || defaultArtText();
+      } catch {
+        return defaultArtText();
+      }
+    }
+
+    function saveArtText(value) {
+      const clean = sanitizeArtText(value) || defaultArtText();
+      localStorage.setItem(ART_STORAGE_KEY, clean);
+      return clean;
+    }
+
+    function clampPacketGap(value) {
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric)) return DEFAULT_PACKET_GAP_SECONDS;
+      return Math.max(MIN_PACKET_GAP_SECONDS, Math.min(MAX_PACKET_GAP_SECONDS, numeric));
+    }
+
+    function loadPacketGap() {
+      try {
+        return clampPacketGap(localStorage.getItem(PACKET_GAP_STORAGE_KEY) || DEFAULT_PACKET_GAP_SECONDS);
+      } catch {
+        return DEFAULT_PACKET_GAP_SECONDS;
+      }
+    }
+
+    function savePacketGap(value) {
+      const clean = clampPacketGap(value);
+      localStorage.setItem(PACKET_GAP_STORAGE_KEY, String(clean));
+      return clean;
+    }
+
+    function artLines() {
+      return loadArtText()
+        .split("\n")
+        .map((line) => line.trimEnd())
+        .filter((line) => line.trim());
+    }
+
+    function renderArtSettings() {
+      const clean = sanitizeArtText(el("artEditor").value);
+      const lines = clean ? clean.split("\n") : [];
+      el("artPreview").textContent = clean || "";
+      el("artMeta").textContent = `${lines.length}/${MAX_ART_LINES} lines, max ${MAX_ART_LINE_CHARS} ASCII chars per line`;
+      el("packetGapInput").value = String(clampPacketGap(el("packetGapInput").value));
+    }
+
+    function openSettings() {
+      el("artEditor").value = loadArtText();
+      el("packetGapInput").value = String(loadPacketGap());
+      renderArtSettings();
+      el("settingsView").hidden = false;
+      el("artEditor").focus();
+    }
+
+    function closeSettings() {
+      el("settingsView").hidden = true;
+      el("composer").focus();
     }
 
     function cleanReplyName(value) {
@@ -643,6 +858,9 @@ INDEX_HTML = r"""<!doctype html>
       el("snrValue").textContent = data.snr || "-";
       el("sendButton").disabled = !data.connected;
       el("artButton").disabled = !data.connected;
+      if (data.packet_gap && el("settingsView").hidden) {
+        el("packetGapInput").value = String(clampPacketGap(data.packet_gap));
+      }
       updateComposerHint();
       document.querySelectorAll(".topic-chip").forEach((button) => {
         button.classList.toggle("active", Number(button.dataset.topic) === Number(data.topic || 1));
@@ -669,6 +887,12 @@ INDEX_HTML = r"""<!doctype html>
 
     async function sendChatText(topic, text) {
       await postJSON("/api/send", { topic, text });
+    }
+
+    async function applyPacketGap(value) {
+      const packetGap = savePacketGap(value);
+      await postJSON("/api/settings", { packet_gap: packetGap });
+      return packetGap;
     }
 
     async function setTopic(topic) {
@@ -729,20 +953,47 @@ INDEX_HTML = r"""<!doctype html>
     el("artButton").addEventListener("click", async () => {
       const button = el("artButton");
       const topic = Number(el("topicInput").value);
+      const lines = artLines();
+      if (!lines.length) {
+        appendStatus("Badge art is empty");
+        return;
+      }
       clearReply();
       button.disabled = true;
-      appendStatus("Sending LC26 art...");
+      appendStatus("Sending badge art...");
       try {
-        for (const line of BADGE_ART_LINES) {
+        for (const line of lines) {
           await sendChatText(topic, line);
-          await wait(180);
+          await wait(120);
         }
-        appendStatus("LC26 art sent to topic " + two(topic));
+        appendStatus("Badge art sent to topic " + two(topic));
       } catch (err) {
         appendStatus(err.message);
       } finally {
         button.disabled = !state.connected;
       }
+    });
+
+    el("settingsButton").addEventListener("click", openSettings);
+    el("closeSettings").addEventListener("click", closeSettings);
+    el("artEditor").addEventListener("input", renderArtSettings);
+    el("packetGapInput").addEventListener("change", renderArtSettings);
+    el("saveArt").addEventListener("click", async () => {
+      try {
+        el("artEditor").value = saveArtText(el("artEditor").value);
+        const packetGap = await applyPacketGap(el("packetGapInput").value);
+        el("packetGapInput").value = String(packetGap);
+        renderArtSettings();
+        appendStatus("Badge art saved; packet gap " + packetGap.toFixed(1) + "s");
+        closeSettings();
+      } catch (err) {
+        appendStatus(err.message);
+      }
+    });
+    el("resetArt").addEventListener("click", () => {
+      el("artEditor").value = defaultArtText();
+      el("packetGapInput").value = String(DEFAULT_PACKET_GAP_SECONDS);
+      renderArtSettings();
     });
 
     const events = new EventSource("/api/events");
@@ -765,6 +1016,7 @@ INDEX_HTML = r"""<!doctype html>
       .then((data) => {
         applyState(data);
         renderMessages();
+        applyPacketGap(loadPacketGap()).catch((err) => appendStatus(err.message));
       })
       .catch((err) => appendStatus(err.message));
   </script>
@@ -841,11 +1093,18 @@ def _chunk_for_total(text: str, total: int, byte_limit: int) -> list[str]:
 
 
 class ChatBridge:
-    def __init__(self, port: str | None, topic: int, auto_port: bool = True):
+    def __init__(
+        self,
+        port: str | None,
+        topic: int,
+        auto_port: bool = True,
+        packet_interval_s: float = DEFAULT_PACKET_SEND_INTERVAL_S,
+    ):
         self.preferred_port = port
         self.port = port or "auto"
         self.auto_port = auto_port
         self.topic = max(1, min(99, topic))
+        self.packet_interval_s = _clamp_packet_interval(packet_interval_s)
         self.alias = ""
         self.connected = False
         self.status = "Waiting for badge"
@@ -860,6 +1119,8 @@ class ChatBridge:
         self._event_cond = threading.Condition()
         self._stop = threading.Event()
         self._pending_tx_echoes: list[tuple[int, str]] = []
+        self._tx_lock = threading.Lock()
+        self._last_packet_at = 0.0
 
     def start(self) -> None:
         thread = threading.Thread(target=self._run, name="badge-serial", daemon=True)
@@ -876,9 +1137,20 @@ class ChatBridge:
             "rx": self.rx,
             "rssi": self.last_rssi,
             "snr": self.last_snr,
+            "packet_gap": self.packet_interval_s,
         }
 
+    def set_packet_interval(self, seconds: float) -> float:
+        self.packet_interval_s = _clamp_packet_interval(seconds)
+        if self._serial is not None:
+            self._write_line(f"GAP\t{self.packet_interval_s:.2f}")
+        self._add_event("state", self.state())
+        self._add_event("status", {"text": f"Packet gap set to {self.packet_interval_s:.1f}s"})
+        return self.packet_interval_s
+
     def send_message(self, topic: int, text: str) -> None:
+        if not self.connected:
+            raise RuntimeError("Open Apps -> PC Chat on the badge before sending")
         topic = max(1, min(99, int(topic)))
         text = text.replace("\t", " ").replace("\r", " ").replace("\n", " ").strip()
         if not text:
@@ -889,16 +1161,17 @@ class ChatBridge:
         chunks = split_text_for_chat(text)
         if len(chunks) > 1:
             self._add_event("status", {"text": f"Splitting message into {len(chunks)} packets"})
-        for index, chunk in enumerate(chunks):
-            self._queue_pending_tx(topic, chunk)
-            try:
-                self._write_line(f"SEND\t{topic}\t{chunk}")
-            except Exception:
-                self._drop_pending_tx(topic, chunk)
-                raise
-            self._echo_local_tx(topic, chunk)
-            if index < len(chunks) - 1:
-                time.sleep(CHUNK_SEND_DELAY_S)
+        with self._tx_lock:
+            for chunk in chunks:
+                self._wait_for_packet_slot()
+                self._queue_pending_tx(topic, chunk)
+                try:
+                    self._write_line(f"SEND\t{topic}\t{chunk}")
+                except Exception:
+                    self._drop_pending_tx(topic, chunk)
+                    raise
+                self._last_packet_at = time.monotonic()
+                self._echo_local_tx(topic, chunk)
 
     def set_topic(self, topic: int) -> None:
         self.topic = max(1, min(99, int(topic)))
@@ -943,16 +1216,22 @@ class ChatBridge:
         with serial.Serial(port, 115200, timeout=0.2, write_timeout=1) as ser:
             with self._serial_lock:
                 self._serial = ser
-            self.connected = True
-            self.status = "Connected"
-            self._add_event("status", {"text": f"Connected to {port}"})
+            self.connected = False
+            self.alias = ""
+            self.status = "USB connected. Open Apps -> PC Chat on the badge."
+            self._add_event("status", {"text": self.status})
             self._add_event("state", self.state())
             self._write_line("PING")
             self._write_line(f"TOPIC\t{self.topic}")
+            self._write_line(f"GAP\t{self.packet_interval_s:.2f}")
+            next_ping = time.monotonic() + HANDSHAKE_PING_INTERVAL_S
 
             while not self._stop.is_set():
                 raw = ser.readline()
                 if not raw:
+                    if not self.connected and time.monotonic() >= next_ping:
+                        self._write_line("PING")
+                        next_ping = time.monotonic() + HANDSHAKE_PING_INTERVAL_S
                     continue
                 line = raw.decode("utf-8", "replace").strip()
                 if line:
@@ -983,12 +1262,20 @@ class ChatBridge:
         if kind in {"READY", "PONG"} and len(parts) >= 4:
             self.alias = parts[2]
             self.topic = _parse_topic(parts[3], self.topic)
+            was_connected = self.connected
+            self.connected = True
             self.status = "Connected"
+            if not was_connected:
+                self._add_event("status", {"text": f"PC Chat ready on {self.port}"})
             self._add_event("state", self.state())
             return
         if kind == "TOPIC" and len(parts) >= 3:
             self.topic = _parse_topic(parts[2], self.topic)
             self._add_event("topic", {"topic": self.topic, "state": self.state()})
+            return
+        if kind == "GAP" and len(parts) >= 3:
+            self.packet_interval_s = _clamp_packet_interval(parts[2])
+            self._add_event("state", self.state())
             return
         if kind == "TX" and len(parts) >= 5:
             topic = _parse_topic(parts[2], self.topic)
@@ -1037,6 +1324,12 @@ class ChatBridge:
             self._serial.write((line + "\n").encode("utf-8"))
             self._serial.flush()
 
+    def _wait_for_packet_slot(self) -> None:
+        elapsed = time.monotonic() - self._last_packet_at
+        delay = self.packet_interval_s - elapsed
+        if delay > 0:
+            time.sleep(delay)
+
     def _queue_pending_tx(self, topic: int, text: str) -> None:
         self._pending_tx_echoes.append((topic, text))
         self._pending_tx_echoes = self._pending_tx_echoes[-100:]
@@ -1083,6 +1376,14 @@ def _parse_topic(value: str, fallback: int) -> int:
         return fallback
 
 
+def _clamp_packet_interval(value: float) -> float:
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        seconds = DEFAULT_PACKET_SEND_INTERVAL_S
+    return max(MIN_PACKET_SEND_INTERVAL_S, min(MAX_PACKET_SEND_INTERVAL_S, seconds))
+
+
 class ChatHTTPServer(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -1105,6 +1406,9 @@ class ChatHandler(BaseHTTPRequestHandler):
             return
         if parsed.path == "/api/state":
             self._send_json(self.server.bridge.state())
+            return
+        if parsed.path == "/api/settings":
+            self._send_json({"packet_gap": self.server.bridge.packet_interval_s})
             return
         if parsed.path == "/api/events":
             self._send_events(parsed.query)
@@ -1138,6 +1442,10 @@ class ChatHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/topic":
                 self.server.bridge.set_topic(payload.get("topic", 1))
                 self._send_json({"ok": True})
+                return
+            if parsed.path == "/api/settings":
+                packet_gap = self.server.bridge.set_packet_interval(payload.get("packet_gap", DEFAULT_PACKET_SEND_INTERVAL_S))
+                self._send_json({"ok": True, "packet_gap": packet_gap})
                 return
             self._send_error(HTTPStatus.NOT_FOUND, "Not found")
         except Exception as exc:
@@ -1240,6 +1548,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local web UI for Hackaday Europe badge chat.")
     parser.add_argument("port", nargs="?", help="Serial port, for example /dev/ttyACM0")
     parser.add_argument("-t", "--topic", type=int, default=1, help="Chat topic 1-99, default 1")
+    parser.add_argument(
+        "--packet-gap",
+        type=float,
+        default=DEFAULT_PACKET_SEND_INTERVAL_S,
+        help="Seconds between radio packets, default 4.0",
+    )
     parser.add_argument("--host", default="127.0.0.1", help="Bind host, default 127.0.0.1")
     parser.add_argument("--web-port", type=int, default=8765, help="Web UI port, default 8765")
     parser.add_argument(
@@ -1256,7 +1570,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     local_only = args.host in LOOPBACK_HOSTS and not args.allow_lan
-    bridge = ChatBridge(args.port, args.topic, auto_port=True)
+    bridge = ChatBridge(args.port, args.topic, auto_port=True, packet_interval_s=args.packet_gap)
     bridge.start()
 
     try:
