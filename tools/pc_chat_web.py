@@ -177,10 +177,24 @@ INDEX_HTML = r"""<!doctype html>
     .meta {
       display: flex;
       justify-content: space-between;
+      align-items: center;
       gap: 12px;
       color: var(--muted);
       font-size: 12px;
       margin-bottom: 5px;
+    }
+    .meta-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      justify-content: flex-end;
+    }
+    .meta-actions span {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .sender {
       color: var(--accent-2);
@@ -194,6 +208,22 @@ INDEX_HTML = r"""<!doctype html>
     .text {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
+    }
+    .reply-button {
+      min-height: 26px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: transparent;
+      color: var(--muted);
+      padding: 3px 8px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 650;
+      flex: 0 0 auto;
+    }
+    .reply-button:hover {
+      border-color: var(--accent-2);
+      color: var(--text);
     }
     aside {
       min-width: 0;
@@ -322,6 +352,29 @@ INDEX_HTML = r"""<!doctype html>
       border-top: 1px solid var(--line);
       background: #191d20;
     }
+    .reply-bar {
+      grid-column: 1 / -1;
+      min-width: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+      align-items: center;
+      border: 1px solid rgba(130, 183, 255, .42);
+      border-radius: 6px;
+      background: #202936;
+      padding: 8px 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .reply-bar[hidden] {
+      display: none;
+    }
+    #replyLabel {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     #composer {
       min-height: 42px;
     }
@@ -344,6 +397,9 @@ INDEX_HTML = r"""<!doctype html>
         padding: 12px 16px;
       }
       footer {
+        grid-template-columns: 1fr;
+      }
+      .reply-bar {
         grid-template-columns: 1fr;
       }
       .message {
@@ -408,6 +464,10 @@ INDEX_HTML = r"""<!doctype html>
       </aside>
     </main>
     <footer>
+      <div id="replyBar" class="reply-bar" hidden>
+        <div id="replyLabel"></div>
+        <button id="clearReply" class="button secondary" type="button">Cancel</button>
+      </div>
       <input id="composer" class="field" maxlength="1200" autocomplete="off" placeholder="Write a badge chat message">
       <button id="sendButton" class="button" type="button">Send</button>
     </footer>
@@ -417,6 +477,7 @@ INDEX_HTML = r"""<!doctype html>
     const messages = el("messages");
     const state = { topic: 1, connected: false, tx: 0, rx: 0, showAll: false };
     const allMessages = [];
+    let replyContext = null;
 
     function two(n) {
       const value = Number(n || 1);
@@ -439,6 +500,62 @@ INDEX_HTML = r"""<!doctype html>
       renderMessages();
     }
 
+    function cleanReplyName(value) {
+      return String(value || "badge")
+        .replace(/[\t\r\n]+/g, " ")
+        .replace(/^@+/, "")
+        .trim()
+        .slice(0, 20) || "badge";
+    }
+
+    function replySnippet(value) {
+      const clean = String(value || "").replace(/\s+/g, " ").trim();
+      return clean.length > 60 ? clean.slice(0, 57) + "..." : clean;
+    }
+
+    function setReply(data) {
+      replyContext = {
+        alias: cleanReplyName(data.alias || data.source || "badge"),
+        topic: Number(data.topic || state.topic || 1),
+        text: data.text || ""
+      };
+      renderReplyBar();
+      updateComposerHint();
+      el("composer").focus();
+    }
+
+    function clearReply() {
+      replyContext = null;
+      renderReplyBar();
+      updateComposerHint();
+    }
+
+    function renderReplyBar() {
+      const bar = el("replyBar");
+      if (!replyContext) {
+        bar.hidden = true;
+        el("replyLabel").textContent = "";
+        return;
+      }
+      const snippet = replySnippet(replyContext.text);
+      const suffix = snippet ? " - " + snippet : "";
+      el("replyLabel").textContent = "Replying to @" + replyContext.alias + " on topic " + two(replyContext.topic) + suffix;
+      bar.hidden = false;
+    }
+
+    function prefixedReplyText(text) {
+      if (!replyContext) return text;
+      return "re @" + replyContext.alias + ": " + text;
+    }
+
+    function updateComposerHint() {
+      if (replyContext) {
+        el("composer").placeholder = "Reply to @" + replyContext.alias + " on topic " + two(replyContext.topic);
+      } else {
+        el("composer").placeholder = "Write a badge chat message to topic " + two(state.topic);
+      }
+    }
+
     function makeMessageRow(data) {
       const row = document.createElement("div");
       row.className = "message " + (data.direction || "in");
@@ -449,10 +566,18 @@ INDEX_HTML = r"""<!doctype html>
       sender.textContent = data.alias || data.source || "badge";
       const detail = document.createElement("span");
       detail.textContent = formatTime(data.timestamp) + "  topic " + two(data.topic) + (data.rssi ? "  " + data.rssi + " dBm" : "");
+      const actions = document.createElement("div");
+      actions.className = "meta-actions";
+      const reply = document.createElement("button");
+      reply.className = "reply-button";
+      reply.type = "button";
+      reply.textContent = "Reply";
+      reply.addEventListener("click", () => setReply(data));
       const text = document.createElement("div");
       text.className = "text";
       text.textContent = data.text || "";
-      meta.append(sender, detail);
+      actions.append(detail, reply);
+      meta.append(sender, actions);
       row.append(meta, text);
       return row;
     }
@@ -503,7 +628,7 @@ INDEX_HTML = r"""<!doctype html>
       el("rssiValue").textContent = data.rssi || "-";
       el("snrValue").textContent = data.snr || "-";
       el("sendButton").disabled = !data.connected;
-      el("composer").placeholder = "Write a badge chat message to topic " + two(data.topic);
+      updateComposerHint();
       document.querySelectorAll(".topic-chip").forEach((button) => {
         button.classList.toggle("active", Number(button.dataset.topic) === Number(data.topic || 1));
       });
@@ -533,9 +658,12 @@ INDEX_HTML = r"""<!doctype html>
       const input = el("composer");
       const text = input.value.trim();
       if (!text) return;
+      const topic = replyContext ? Number(replyContext.topic) : Number(el("topicInput").value);
+      const outgoing = prefixedReplyText(text);
       try {
-        await postJSON("/api/send", { topic: Number(el("topicInput").value), text });
+        await postJSON("/api/send", { topic, text: outgoing });
         input.value = "";
+        clearReply();
         input.focus();
       } catch (err) {
         appendStatus(err.message);
@@ -572,6 +700,8 @@ INDEX_HTML = r"""<!doctype html>
       state.showAll = event.target.checked;
       renderMessages();
     });
+
+    el("clearReply").addEventListener("click", clearReply);
 
     const events = new EventSource("/api/events");
     events.addEventListener("state", (event) => applyState(JSON.parse(event.data)));
