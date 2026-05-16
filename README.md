@@ -176,9 +176,9 @@ The web UI binds to `127.0.0.1` by default, so it is only reachable from your ow
 USB mode is the default and is still needed once to copy the badge app. After the updated `PC Chat` app is on the badge, the browser UI can switch to BLE so the chat can run without the USB cable.
 
 1. Start `PC Chat` on the badge.
-2. Look at the badge screen for the BLE name, for example `LC26-abcd`, and the 6 digit code.
+2. Look at the badge screen for the exact BLE name, for example `LC26-1234abcd`, and the 6 digit code.
 3. Open `http://127.0.0.1:8765`.
-4. In the `Connection` panel, enter the BLE name and code.
+4. In the `Connection` panel, enter the exact BLE name and code.
 5. Click `BLE` or `Connect`.
 
 This uses Bluetooth Low Energy, not Bluetooth Classic serial. The browser still only talks to the local Python server on `127.0.0.1`; the Python server talks BLE to the badge.
@@ -186,20 +186,20 @@ This uses Bluetooth Low Energy, not Bluetooth Classic serial. The browser still 
 You can also start directly in BLE mode:
 
 ```sh
-python3 run_web.py --transport ble --ble-name LC26-abcd --ble-code 123456
+python3 run_web.py --transport ble --ble-name LC26-1234abcd --ble-code 123456
 ```
 
 On Windows PowerShell:
 
 ```powershell
-py run_web.py --transport ble --ble-name LC26-abcd --ble-code 123456
+py run_web.py --transport ble --ble-name LC26-1234abcd --ble-code 123456
 ```
 
 ## Features
 
 - Topic support for `01`-`99`.
 - Quick buttons for topics `01`-`05`.
-- Optional `Show all topics` mode.
+- Optional `Show all topics` mode in the browser UI and on the badge.
 - Reply button in the browser UI. Replies are sent as normal chat text with a prefix like `re @nick:`, so other badges do not need this companion app.
 - `Send Art` button for a small row-based ASCII badge graphic sized for the stock Hackaday Europe chat display.
 - Badge art settings page for editing the ASCII art and the seconds between radio packets in the browser.
@@ -208,7 +208,7 @@ py run_web.py --transport ble --ble-name LC26-abcd --ble-code 123456
 - Status and serial permission errors are shown in the right-side status panel.
 - Long messages are split into normal chat lines.
 - Outbound radio packets are throttled to one packet every `4` seconds to avoid losing later lines in multi-line art.
-- The badge app can also be used without the PC UI: `F1` posts a message, `F2` sends built-in art, `F3` jumps to latest, `F4` changes topic, and `F5` exits.
+- The badge app can also be used without the PC UI: `F1` posts a message, `F2` toggles between the selected topic and all topics, `F3` jumps to latest, `F4` changes topic, and `F5` exits.
 - The badge app uses a colorized Hackaday-style UI on the badge display.
 
 The badge protocol can carry `100` bytes of text, but this companion uses `60` byte chunks for better practical compatibility with long unbroken strings like URLs. Multipart messages are sent as normal chat lines with prefixes like `1/3`, `2/3`, and `3/3`.
@@ -238,5 +238,6 @@ Commands:
 - Your nick is the badge `alias`; the stock chat payload has a 10-character alias field.
 - The browser and terminal companions auto-detect Linux, macOS, and Windows serial ports. You can still pass the port explicitly, for example `python3 tools/pc_chat_web.py /dev/ttyACM0`, `python3 tools/pc_chat_web.py /dev/cu.usbmodem1101`, or `py tools\pc_chat_web.py COM3`.
 - BLE mode requires the `bleak` Python package and a working OS Bluetooth stack. On Linux, make sure Bluetooth is powered on in the desktop settings or with `bluetoothctl`.
+- When several badges are running this app, use the exact BLE name shown on your badge screen. The browser UI refuses the generic `LC26-` prefix to avoid connecting to the wrong badge.
 - On Linux, the included udev rule should make the badge serial port writable automatically after every replug.
 - If you still get `Permission denied` for `/dev/ttyACM0`, replug the badge and check that `/etc/udev/rules.d/99-hackaday-europe-badge.rules` exists.

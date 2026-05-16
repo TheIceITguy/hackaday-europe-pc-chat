@@ -915,7 +915,7 @@ INDEX_HTML = r"""<!doctype html>
       el("artButton").disabled = !data.connected;
       el("usbModeButton").classList.toggle("active", (data.transport || "usb") === "usb");
       el("bleModeButton").classList.toggle("active", (data.transport || "usb") === "ble");
-      if (data.ble_name && !el("bleNameInput").value) {
+      if (data.ble_name && data.ble_name !== "LC26-" && !el("bleNameInput").value) {
         el("bleNameInput").value = data.ble_name;
       }
       if (data.packet_gap && el("settingsView").hidden) {
@@ -966,6 +966,9 @@ INDEX_HTML = r"""<!doctype html>
       if (transport === "ble") {
         const code = el("bleCodeInput").value.trim();
         const name = saveBleName(el("bleNameInput").value);
+        if (!name || name === "LC26-") {
+          throw new Error("Enter the exact BLE name shown on the badge");
+        }
         if (!/^\d{6}$/.test(code)) {
           throw new Error("Enter the 6 digit BLE code shown on the badge");
         }
@@ -1528,14 +1531,21 @@ class ChatBridge:
             name = (getattr(device, "name", "") or "").strip()
             if target and name == target:
                 return device
+        prefix_matches = []
         for device in devices:
             name = (getattr(device, "name", "") or "").strip()
             if target and target.endswith("-") and name.startswith(target):
-                return device
+                prefix_matches.append(device)
+                continue
             if not target and name.startswith(fallback_prefix):
-                return device
+                prefix_matches.append(device)
+                continue
             if target == fallback_prefix and name.startswith(fallback_prefix):
-                return device
+                prefix_matches.append(device)
+        if len(prefix_matches) == 1:
+            return prefix_matches[0]
+        if len(prefix_matches) > 1:
+            self._add_event("status", {"text": "Multiple BLE badges found; enter the exact BLE name"})
         return None
 
     async def _connect_ble_device(self, client_cls: Any, device: Any) -> None:

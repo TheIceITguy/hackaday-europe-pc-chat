@@ -1,5 +1,6 @@
 """USB companion bridge for the Hackaday Europe chat protocol."""
 
+import os
 import select
 import struct
 import sys
@@ -25,14 +26,7 @@ MAX_MESSAGE_LEN = 100
 SAFE_MESSAGE_LEN = 60
 MAX_SERIAL_LINE_LEN = 1200
 RADIO_PACKET_INTERVAL_MS = 4000
-BADGE_ART_LINES = (
-    "+----------------------+",
-    "| HACKADAY EUROPE 2026 |",
-    "| LECCO RADIO BRIDGE  |",
-    "|    < LC26 LORA >    |",
-    "|  )))  868 MHz  (((  |",
-    "+----------------------+",
-)
+BLE_NAME_PREFIX = "LC26-"
 TEXT_CHAT = Protocol(port=6, name="TEXT_CHAT", structdef="!H10s%ds" % MAX_MESSAGE_LEN)
 
 BLE_UART_UUID = bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E") if bluetooth else None
@@ -69,13 +63,14 @@ class App(BaseApp):
         self.last_status = "Launch companion on computer"
         self.compose_active = False
         self.topic_picker_active = False
+        self.show_all_topics = False
         self.auto_follow = True
         self.last_radio_send_ms = self._ticks_ms() - RADIO_PACKET_INTERVAL_MS
         self.radio_packet_interval_ms = RADIO_PACKET_INTERVAL_MS
         self.usb_debug_sleep_ms = None
         self.usb_debug_app = None
         self.ble = None
-        self.ble_name = "LC26-%04x" % (MY_ADDRESS & 0xFFFF)
+        self.ble_name = BLE_NAME_PREFIX + ("%08x" % MY_ADDRESS)[-8:]
         self.ble_pair_code = self._new_pair_code()
         self.ble_conn_handle = None
         self.ble_tx_handle = None
@@ -100,11 +95,11 @@ class App(BaseApp):
         self.page.create_infobar((self._left_info(), "PC Chat"))
         self.page.create_content()
         self.page.add_message_rows(1, 80)
-        self.page.create_menubar(["Post", "Art", "Latest", "Topic", "Home"])
+        self.page.create_menubar(["Post", self._filter_button_label(), "Latest", "Topic", "Home"])
         self._apply_colors()
         self.page.replace_screen()
         self._print("READY\t%s\t%d" % (self._my_alias(), self.active_topic))
-        self._add_row("ready", "F1 Post  F2 Art  F4 Topic")
+        self._add_row("ready", "F1 Post  F2 All  F4 Topic")
         self._add_row("ble", self._ble_display_status())
         self._refresh(force=True)
         return super().switch_to_foreground()
@@ -152,7 +147,7 @@ class App(BaseApp):
             self._start_compose()
             return
         if self.badge.keyboard.f2():
-            self._send_art()
+            self._toggle_topic_filter()
             return
         if self.badge.keyboard.f3():
             self.auto_follow = True
@@ -206,11 +201,6 @@ class App(BaseApp):
             self.topic_picker_active = False
             self._set_topic(topic_text)
 
-    def _send_art(self):
-        self._add_row("art", "sending %d lines slowly" % len(BADGE_ART_LINES))
-        for line in BADGE_ART_LINES:
-            self._send_chat(line)
-
     def receive_message(self, message):
         if message.source == MY_ADDRESS:
             return
@@ -236,8 +226,8 @@ class App(BaseApp):
                 snr,
             )
         )
-        if topic == self.active_topic:
-            self._add_row(alias[:10], text)
+        if self.show_all_topics or topic == self.active_topic:
+            self._add_chat_row(topic, alias, text)
 
     def _read_usb_lines(self):
         while self.poll.poll(0):
@@ -321,7 +311,7 @@ class App(BaseApp):
             self.last_radio_send_ms = self._ticks_ms()
             self.tx_count += 1
             self._print("TX\t%d\t%s\t%s" % (self.active_topic, alias, self._clean_field(chunk)))
-            self._add_row(alias[:10], chunk)
+            self._add_chat_row(self.active_topic, alias, chunk)
 
     def _set_topic(self, topic_text):
         try:
@@ -330,6 +320,15 @@ class App(BaseApp):
             self._print("ERR\tbad topic")
             return
         self._print("TOPIC\t%d" % self.active_topic)
+        self._refresh(force=True)
+
+    def _toggle_topic_filter(self):
+        self.show_all_topics = not self.show_all_topics
+        if self.show_all_topics:
+            self._add_row("filter", "showing all topics")
+        else:
+            self._add_row("filter", "showing topic %02d" % self.active_topic)
+        self._refresh_filter_button()
         self._refresh(force=True)
 
     def _set_gap(self, gap_text):
@@ -351,11 +350,28 @@ class App(BaseApp):
         if force:
             self.page.populate_message_rows(self.rows or [("pc", self.last_status)])
 
+    def _add_chat_row(self, topic, alias, text):
+        if self.show_all_topics:
+            self._add_row("T%02d %s" % (topic, alias[:6]), text)
+        else:
+            self._add_row(alias[:10], text)
+
     def _add_row(self, left, right):
         self.rows.append((left, right))
         self.rows = self.rows[-6:]
         if self.page is not None:
             self.page.populate_message_rows(self.rows)
+
+    def _filter_button_label(self):
+        return "Topic" if self.show_all_topics else "All"
+
+    def _refresh_filter_button(self):
+        if self.page is None:
+            return
+        try:
+            self.page.set_menubar_button_label(1, self._filter_button_label())
+        except Exception:
+            pass
 
     def _apply_colors(self):
         if self.page is None:
@@ -386,6 +402,8 @@ class App(BaseApp):
             pass
 
     def _left_info(self):
+        if self.show_all_topics:
+            return "All topics  BLE %s" % self.ble_pair_code
         return "Topic %02d  BLE %s" % (self.active_topic, self.ble_pair_code)
 
     def _my_alias(self):
@@ -479,6 +497,14 @@ class App(BaseApp):
 
     def _new_pair_code(self):
         value = (MY_ADDRESS ^ self._ticks_ms()) % 1000000
+        try:
+            random_bytes = os.urandom(4)
+            random_value = 0
+            for byte in random_bytes:
+                random_value = (random_value << 8) | byte
+            value = (value ^ random_value) % 1000000
+        except Exception:
+            pass
         return "%06d" % value
 
     def _handle_pair(self, parts, source):
