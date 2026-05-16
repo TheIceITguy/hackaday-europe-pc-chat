@@ -1,6 +1,7 @@
 """USB companion bridge for the Hackaday Europe chat protocol."""
 
 import select
+import struct
 import sys
 import time
 
@@ -11,6 +12,11 @@ from net.net import BROADCAST_ADDRESS, MY_ADDRESS, register_receiver, send
 from net.protocols import NetworkFrame, Protocol
 from ui import styles
 from ui.page import Page
+
+try:
+    import bluetooth
+except ImportError:
+    bluetooth = None
 
 
 APP_NAME = "PC Chat"
@@ -29,9 +35,24 @@ BADGE_ART_LINES = (
 )
 TEXT_CHAT = Protocol(port=6, name="TEXT_CHAT", structdef="!H10s%ds" % MAX_MESSAGE_LEN)
 
+BLE_UART_UUID = bluetooth.UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E") if bluetooth else None
+BLE_UART_TX = bluetooth.UUID("6E400003-B5A3-F393-E0A9-E50E24DCCA9E") if bluetooth else None
+BLE_UART_RX = bluetooth.UUID("6E400002-B5A3-F393-E0A9-E50E24DCCA9E") if bluetooth else None
+BLE_NOTIFY_CHUNK = 20
+BLE_WRITE_BUFFER = 256
+
+_IRQ_CENTRAL_CONNECT = 1
+_IRQ_CENTRAL_DISCONNECT = 2
+_IRQ_GATTS_WRITE = 3
+_FLAG_READ = 0x0002
+_FLAG_WRITE = 0x0008
+_FLAG_NOTIFY = 0x0010
+_ADV_TYPE_FLAGS = 0x01
+_ADV_TYPE_NAME = 0x09
+
 
 class App(BaseApp):
-    """Send and receive normal badge chat messages over USB serial."""
+    """Send and receive normal badge chat messages over USB serial or BLE."""
 
     def __init__(self, name, badge):
         super().__init__(name, badge)
@@ -53,13 +74,26 @@ class App(BaseApp):
         self.radio_packet_interval_ms = RADIO_PACKET_INTERVAL_MS
         self.usb_debug_sleep_ms = None
         self.usb_debug_app = None
+        self.ble = None
+        self.ble_name = "LC26-%04x" % (MY_ADDRESS & 0xFFFF)
+        self.ble_pair_code = self._new_pair_code()
+        self.ble_conn_handle = None
+        self.ble_tx_handle = None
+        self.ble_rx_handle = None
+        self.ble_line_buffer = ""
+        self.ble_pending_lines = []
+        self.ble_paired = False
+        self.ble_status = "BLE off"
+        self.ble_notice = None
 
     def start(self):
         super().start()
         register_receiver(TEXT_CHAT, self.receive_message)
+        self._start_ble()
 
     def switch_to_foreground(self):
         self._slow_usb_debug()
+        self._start_ble()
         self.compose_active = False
         self.topic_picker_active = False
         self.page = Page()
@@ -71,6 +105,7 @@ class App(BaseApp):
         self.page.replace_screen()
         self._print("READY\t%s\t%d" % (self._my_alias(), self.active_topic))
         self._add_row("ready", "F1 Post  F2 Art  F4 Topic")
+        self._add_row("ble", self._ble_display_status())
         self._refresh(force=True)
         return super().switch_to_foreground()
 
@@ -81,6 +116,8 @@ class App(BaseApp):
 
     def run_foreground(self):
         self._read_usb_lines()
+        self._read_ble_lines()
+        self._flush_ble_notice()
 
         if self.compose_active:
             self._run_compose()
@@ -222,11 +259,17 @@ class App(BaseApp):
                     self.line_buffer = ""
                     self._print("ERR\tline too long")
 
-    def _handle_line(self, line):
+    def _handle_line(self, line, source="usb"):
         if not line:
             return
         parts = line.split("\t", 2)
         command = parts[0].upper()
+        if command == "PAIR":
+            self._handle_pair(parts, source)
+            return
+        if source == "ble" and not self.ble_paired:
+            self._ble_notify("PCCHAT\tPAIR\tREQUIRED", allow_unpaired=True)
+            return
         if command == "PING":
             self._print("PONG\t%s\t%d" % (self._my_alias(), self.active_topic))
             return
@@ -343,7 +386,7 @@ class App(BaseApp):
             pass
 
     def _left_info(self):
-        return "Topic %02d  %08x  %s" % (self.active_topic, MY_ADDRESS, self._my_alias())
+        return "Topic %02d  BLE %s" % (self.active_topic, self.ble_pair_code)
 
     def _my_alias(self):
         try:
@@ -430,7 +473,158 @@ class App(BaseApp):
             self._sleep_ms(delay)
 
     def _print(self, line):
-        print("PCCHAT\t" + line)
+        packet = "PCCHAT\t" + line
+        print(packet)
+        self._ble_notify(packet)
+
+    def _new_pair_code(self):
+        value = (MY_ADDRESS ^ self._ticks_ms()) % 1000000
+        return "%06d" % value
+
+    def _handle_pair(self, parts, source):
+        if source != "ble":
+            self._print("PAIR\tUSB")
+            return
+        if len(parts) < 2:
+            self._ble_notify("PCCHAT\tERR\tmissing pair code", allow_unpaired=True)
+            return
+        code = parts[1].strip()
+        if code == self.ble_pair_code:
+            self.ble_paired = True
+            self.ble_status = "BLE paired"
+            self._ble_notify("PCCHAT\tPAIR\tOK", allow_unpaired=True)
+            self._ble_notify(
+                "PCCHAT\tREADY\t%s\t%d" % (self._my_alias(), self.active_topic),
+                allow_unpaired=True,
+            )
+            self._add_row("ble", "paired with computer")
+            self._refresh(force=True)
+            return
+        self.ble_paired = False
+        self._ble_notify("PCCHAT\tERR\tbad pair code", allow_unpaired=True)
+        self._add_row("ble", "bad pair code")
+
+    def _start_ble(self):
+        if self.ble is not None:
+            return
+        if bluetooth is None:
+            self.ble_status = "BLE unavailable"
+            return
+        try:
+            self.ble = bluetooth.BLE()
+            self.ble.active(True)
+            try:
+                self.ble.config(gap_name=self.ble_name)
+            except Exception:
+                pass
+            service = (
+                BLE_UART_UUID,
+                (
+                    (BLE_UART_TX, _FLAG_READ | _FLAG_NOTIFY),
+                    (BLE_UART_RX, _FLAG_WRITE),
+                ),
+            )
+            ((self.ble_tx_handle, self.ble_rx_handle),) = self.ble.gatts_register_services((service,))
+            try:
+                self.ble.gatts_set_buffer(self.ble_rx_handle, BLE_WRITE_BUFFER)
+            except Exception:
+                pass
+            self.ble.irq(self._ble_irq)
+            self._ble_advertise()
+            self.ble_status = "BLE code %s" % self.ble_pair_code
+        except Exception as exc:
+            self.ble_status = "BLE failed"
+            print("PCCHAT\tERR\tBLE %s" % self._clean_field(exc))
+            self.ble = None
+
+    def _ble_irq(self, event, data):
+        if event == _IRQ_CENTRAL_CONNECT:
+            self.ble_conn_handle = data[0]
+            self.ble_paired = False
+            self.ble_status = "BLE connected"
+            self.ble_notice = "enter code %s" % self.ble_pair_code
+            self._ble_notify("PCCHAT\tPAIR\tREQUIRED", allow_unpaired=True)
+            return
+        if event == _IRQ_CENTRAL_DISCONNECT:
+            self.ble_conn_handle = None
+            self.ble_paired = False
+            self.ble_line_buffer = ""
+            self.ble_status = "BLE code %s" % self.ble_pair_code
+            self.ble_notice = "disconnected"
+            self._ble_advertise()
+            return
+        if event == _IRQ_GATTS_WRITE and self.ble is not None:
+            try:
+                conn_handle, value_handle = data
+            except Exception:
+                return
+            if value_handle != self.ble_rx_handle:
+                return
+            try:
+                chunk = self.ble.gatts_read(self.ble_rx_handle).decode()
+            except Exception:
+                return
+            self.ble_line_buffer += chunk
+            while "\n" in self.ble_line_buffer:
+                line, self.ble_line_buffer = self.ble_line_buffer.split("\n", 1)
+                self.ble_pending_lines.append(line.strip())
+
+    def _read_ble_lines(self):
+        while self.ble_pending_lines:
+            line = self.ble_pending_lines.pop(0)
+            self._handle_line(line, source="ble")
+
+    def _ble_notify(self, line, allow_unpaired=False):
+        if self.ble is None or self.ble_conn_handle is None or self.ble_tx_handle is None:
+            return
+        if not self.ble_paired and not allow_unpaired:
+            return
+        payload = (line + "\n").encode()
+        for offset in range(0, len(payload), BLE_NOTIFY_CHUNK):
+            try:
+                self.ble.gatts_notify(
+                    self.ble_conn_handle,
+                    self.ble_tx_handle,
+                    payload[offset : offset + BLE_NOTIFY_CHUNK],
+                )
+            except Exception:
+                return
+            self._sleep_ms(10)
+
+    def _flush_ble_notice(self):
+        if self.ble_notice:
+            self._add_row("ble", self.ble_notice)
+            self.ble_notice = None
+            self._refresh(force=True)
+
+    def _ble_advertise(self):
+        if self.ble is None:
+            return
+        payload = self._ble_advertising_payload(self.ble_name)
+        try:
+            self.ble.gap_advertise(100000, adv_data=payload)
+        except Exception:
+            self.ble_status = "BLE advertise failed"
+
+    def _ble_advertising_payload(self, name):
+        payload = bytearray()
+
+        def append(adv_type, value):
+            payload.extend(struct.pack("BB", len(value) + 1, adv_type))
+            payload.extend(value)
+
+        append(_ADV_TYPE_FLAGS, b"\x06")
+        append(_ADV_TYPE_NAME, name.encode()[:24])
+        return payload
+
+    def _ble_display_status(self):
+        if bluetooth is None:
+            return "not in firmware"
+        if self.ble_conn_handle is None:
+            return "%s waiting" % self.ble_name
+        if self.ble_paired:
+            return "paired"
+        return "code %s" % self.ble_pair_code
 
     def _slow_usb_debug(self):
         for app in BaseApp.all_apps:

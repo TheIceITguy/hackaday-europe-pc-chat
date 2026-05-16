@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import glob
 import json
 import sys
@@ -33,6 +34,11 @@ DEFAULT_PACKET_SEND_INTERVAL_S = 4.0
 MIN_PACKET_SEND_INTERVAL_S = 1.0
 MAX_PACKET_SEND_INTERVAL_S = 15.0
 HANDSHAKE_PING_INTERVAL_S = 1.0
+BLE_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
+BLE_RX_CHAR_UUID = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"
+BLE_TX_CHAR_UUID = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"
+BLE_DEFAULT_NAME = "LC26-"
+BLE_WRITE_CHUNK_BYTES = 20
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -316,6 +322,25 @@ INDEX_HTML = r"""<!doctype html>
       cursor: not-allowed;
       opacity: .55;
     }
+    .connection-grid {
+      display: grid;
+      gap: 8px;
+    }
+    .transport-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .button.active {
+      border-color: rgba(101, 211, 155, .72);
+      background: #244936;
+      color: var(--text);
+    }
+    .ble-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
     .art-actions {
       display: grid;
       grid-template-columns: 1fr 1fr;
@@ -546,10 +571,24 @@ INDEX_HTML = r"""<!doctype html>
           <div class="section-title">Badge</div>
           <div class="facts">
             <div class="fact"><span>Port</span><strong id="portValue">-</strong></div>
-            <div class="fact"><span>Mode</span><strong>Local</strong></div>
+            <div class="fact"><span>Mode</span><strong id="transportMode">USB</strong></div>
             <div class="fact"><span>TX</span><strong id="txValue">0</strong></div>
             <div class="fact"><span>RX</span><strong id="rxValue">0</strong></div>
             <div class="fact status-fact"><span>Status</span><strong id="statusDetail">Starting</strong></div>
+          </div>
+        </div>
+        <div>
+          <div class="section-title">Connection</div>
+          <div class="connection-grid">
+            <div class="transport-buttons">
+              <button id="usbModeButton" class="button secondary" type="button">USB</button>
+              <button id="bleModeButton" class="button secondary" type="button">BLE</button>
+            </div>
+            <input id="bleNameInput" class="field" autocomplete="off" placeholder="BLE name, e.g. LC26-abcd">
+            <div class="ble-row">
+              <input id="bleCodeInput" class="field" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="Code">
+              <button id="bleConnectButton" class="button secondary" type="button">Connect</button>
+            </div>
           </div>
         </div>
         <div>
@@ -615,6 +654,7 @@ INDEX_HTML = r"""<!doctype html>
     let replyContext = null;
     const ART_STORAGE_KEY = "pcChatBadgeArt";
     const PACKET_GAP_STORAGE_KEY = "pcChatPacketGap";
+    const BLE_NAME_STORAGE_KEY = "pcChatBleName";
     const MAX_ART_LINES = 8;
     const MAX_ART_LINE_CHARS = 32;
     const DEFAULT_PACKET_GAP_SECONDS = 4.0;
@@ -698,6 +738,20 @@ INDEX_HTML = r"""<!doctype html>
     function savePacketGap(value) {
       const clean = clampPacketGap(value);
       localStorage.setItem(PACKET_GAP_STORAGE_KEY, String(clean));
+      return clean;
+    }
+
+    function loadBleName() {
+      try {
+        return localStorage.getItem(BLE_NAME_STORAGE_KEY) || "";
+      } catch {
+        return "";
+      }
+    }
+
+    function saveBleName(value) {
+      const clean = String(value || "").trim();
+      localStorage.setItem(BLE_NAME_STORAGE_KEY, clean);
       return clean;
     }
 
@@ -852,12 +906,18 @@ INDEX_HTML = r"""<!doctype html>
       el("topicInput").value = Number(data.topic || 1);
       el("aliasBadge").textContent = data.alias || "unknown";
       el("portValue").textContent = data.port || "-";
+      el("transportMode").textContent = String(data.transport || "usb").toUpperCase();
       el("txValue").textContent = String(data.tx || 0);
       el("rxValue").textContent = String(data.rx || 0);
       el("rssiValue").textContent = data.rssi || "-";
       el("snrValue").textContent = data.snr || "-";
       el("sendButton").disabled = !data.connected;
       el("artButton").disabled = !data.connected;
+      el("usbModeButton").classList.toggle("active", (data.transport || "usb") === "usb");
+      el("bleModeButton").classList.toggle("active", (data.transport || "usb") === "ble");
+      if (data.ble_name && !el("bleNameInput").value) {
+        el("bleNameInput").value = data.ble_name;
+      }
       if (data.packet_gap && el("settingsView").hidden) {
         el("packetGapInput").value = String(clampPacketGap(data.packet_gap));
       }
@@ -899,6 +959,20 @@ INDEX_HTML = r"""<!doctype html>
       const value = Math.max(1, Math.min(99, Number(topic || 1)));
       el("topicInput").value = value;
       await postJSON("/api/topic", { topic: value });
+    }
+
+    async function setTransport(transport) {
+      const payload = { transport };
+      if (transport === "ble") {
+        const code = el("bleCodeInput").value.trim();
+        const name = saveBleName(el("bleNameInput").value);
+        if (!/^\d{6}$/.test(code)) {
+          throw new Error("Enter the 6 digit BLE code shown on the badge");
+        }
+        payload.pair_code = code;
+        payload.ble_name = name;
+      }
+      await postJSON("/api/transport", payload);
     }
 
     el("sendButton").addEventListener("click", async () => {
@@ -946,6 +1020,40 @@ INDEX_HTML = r"""<!doctype html>
     el("showAllTopics").addEventListener("change", (event) => {
       state.showAll = event.target.checked;
       renderMessages();
+    });
+
+    el("usbModeButton").addEventListener("click", async () => {
+      try {
+        await setTransport("usb");
+        appendStatus("Switching to USB");
+      } catch (err) {
+        appendStatus(err.message);
+      }
+    });
+
+    el("bleModeButton").addEventListener("click", async () => {
+      try {
+        await setTransport("ble");
+        appendStatus("Switching to BLE");
+      } catch (err) {
+        appendStatus(err.message);
+      }
+    });
+
+    el("bleConnectButton").addEventListener("click", async () => {
+      try {
+        await setTransport("ble");
+        appendStatus("Connecting with BLE");
+      } catch (err) {
+        appendStatus(err.message);
+      }
+    });
+
+    el("bleCodeInput").addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        el("bleConnectButton").click();
+      }
     });
 
     el("clearReply").addEventListener("click", clearReply);
@@ -1010,6 +1118,8 @@ INDEX_HTML = r"""<!doctype html>
       el("status").textContent = "UI reconnecting";
       el("dot").classList.remove("connected");
     };
+
+    el("bleNameInput").value = loadBleName();
 
     fetch("/api/state")
       .then((res) => res.json())
@@ -1099,12 +1209,20 @@ class ChatBridge:
         topic: int,
         auto_port: bool = True,
         packet_interval_s: float = DEFAULT_PACKET_SEND_INTERVAL_S,
+        transport: str = "usb",
+        ble_name: str = BLE_DEFAULT_NAME,
+        ble_address: str | None = None,
+        ble_pair_code: str = "",
     ):
         self.preferred_port = port
         self.port = port or "auto"
         self.auto_port = auto_port
         self.topic = max(1, min(99, topic))
         self.packet_interval_s = _clamp_packet_interval(packet_interval_s)
+        self.transport = _parse_transport(transport)
+        self.ble_name = ble_name or BLE_DEFAULT_NAME
+        self.ble_address = ble_address or ""
+        self.ble_pair_code = _clean_pair_code(ble_pair_code)
         self.alias = ""
         self.connected = False
         self.status = "Waiting for badge"
@@ -1114,21 +1232,30 @@ class ChatBridge:
         self.last_snr = ""
         self._serial: serial.Serial | None = None
         self._serial_lock = threading.Lock()
+        self._ble_loop: asyncio.AbstractEventLoop | None = None
+        self._ble_client: Any | None = None
+        self._ble_line_buffer = ""
         self._events: list[dict[str, Any]] = []
         self._event_seq = 0
         self._event_cond = threading.Condition()
         self._stop = threading.Event()
+        self._reconnect = threading.Event()
+        self._transport_lock = threading.Lock()
         self._pending_tx_echoes: list[tuple[int, str]] = []
         self._tx_lock = threading.Lock()
         self._last_packet_at = 0.0
 
     def start(self) -> None:
-        thread = threading.Thread(target=self._run, name="badge-serial", daemon=True)
+        thread = threading.Thread(target=self._run, name="badge-chat-transport", daemon=True)
         thread.start()
 
     def state(self) -> dict[str, Any]:
         return {
             "port": self.port,
+            "transport": self.transport,
+            "ble_name": self.ble_name,
+            "ble_address": self.ble_address,
+            "ble_pair_needed": self.transport == "ble" and not self.ble_pair_code,
             "topic": self.topic,
             "alias": self.alias,
             "connected": self.connected,
@@ -1142,11 +1269,40 @@ class ChatBridge:
 
     def set_packet_interval(self, seconds: float) -> float:
         self.packet_interval_s = _clamp_packet_interval(seconds)
-        if self._serial is not None:
+        if self.connected:
             self._write_line(f"GAP\t{self.packet_interval_s:.2f}")
         self._add_event("state", self.state())
         self._add_event("status", {"text": f"Packet gap set to {self.packet_interval_s:.1f}s"})
         return self.packet_interval_s
+
+    def set_transport(
+        self,
+        transport: str,
+        pair_code: str = "",
+        ble_name: str = "",
+        ble_address: str = "",
+    ) -> None:
+        next_transport = _parse_transport(transport)
+        if next_transport == "ble":
+            code = _clean_pair_code(pair_code or self.ble_pair_code)
+            if not code:
+                raise ValueError("Enter the 6 digit BLE code shown on the badge")
+            self.ble_pair_code = code
+            if ble_name.strip():
+                self.ble_name = ble_name.strip()
+            if ble_address.strip():
+                self.ble_address = ble_address.strip()
+        with self._transport_lock:
+            changed = self.transport != next_transport
+            self.transport = next_transport
+        self._reconnect.set()
+        self._close_current_transport()
+        self.connected = False
+        self.alias = ""
+        self.status = "Switching to %s" % next_transport.upper() if changed else "Reconnecting %s" % next_transport.upper()
+        self.port = self._transport_port_label()
+        self._add_event("status", {"text": self.status})
+        self._add_event("state", self.state())
 
     def send_message(self, topic: int, text: str) -> None:
         if not self.connected:
@@ -1175,7 +1331,7 @@ class ChatBridge:
 
     def set_topic(self, topic: int) -> None:
         self.topic = max(1, min(99, int(topic)))
-        if self._serial is None:
+        if not self.connected:
             self._add_event("topic", {"topic": self.topic, "state": self.state()})
             return
         self._write_line(f"TOPIC\t{self.topic}")
@@ -1193,16 +1349,20 @@ class ChatBridge:
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            self._reconnect.clear()
             try:
-                port = self._select_port()
-                if port is None:
-                    self._mark_disconnected("No badge serial port found")
-                    time.sleep(1.5)
-                    continue
-                self._connect_and_read(port)
+                if self.transport == "ble":
+                    self._run_ble()
+                else:
+                    port = self._select_port()
+                    if port is None:
+                        self._mark_disconnected("No badge serial port found")
+                        self._wait_before_retry(1.5)
+                        continue
+                    self._connect_and_read(port)
             except Exception as exc:
                 self._mark_disconnected(str(exc))
-                time.sleep(1.5)
+                self._wait_before_retry(1.5)
 
     def _select_port(self) -> str | None:
         if self.preferred_port and (Path(self.preferred_port).exists() or not self.auto_port):
@@ -1226,7 +1386,7 @@ class ChatBridge:
             self._write_line(f"GAP\t{self.packet_interval_s:.2f}")
             next_ping = time.monotonic() + HANDSHAKE_PING_INTERVAL_S
 
-            while not self._stop.is_set():
+            while not self._stop.is_set() and not self._reconnect.is_set() and self.transport == "usb":
                 raw = ser.readline()
                 if not raw:
                     if not self.connected and time.monotonic() >= next_ping:
@@ -1236,6 +1396,8 @@ class ChatBridge:
                 line = raw.decode("utf-8", "replace").strip()
                 if line:
                     self._handle_serial_line(line)
+        with self._serial_lock:
+            self._serial = None
 
     def _mark_disconnected(self, reason: str) -> None:
         with self._serial_lock:
@@ -1243,7 +1405,10 @@ class ChatBridge:
         was_connected = self.connected
         previous_status = self.status
         self.connected = False
-        if self.preferred_port and self.auto_port:
+        self._ble_client = None
+        if self.transport == "ble":
+            self.port = self._transport_port_label()
+        elif self.preferred_port and self.auto_port:
             self.port = self.preferred_port + " (searching)"
         elif not self.preferred_port:
             self.port = "auto"
@@ -1259,6 +1424,9 @@ class ChatBridge:
             return
         parts = line.split("\t")
         kind = parts[1] if len(parts) > 1 else ""
+        if kind == "PAIR" and len(parts) >= 3:
+            self._add_event("status", {"text": "BLE paired" if parts[2] == "OK" else "BLE " + parts[2]})
+            return
         if kind in {"READY", "PONG"} and len(parts) >= 4:
             self.alias = parts[2]
             self.topic = _parse_topic(parts[3], self.topic)
@@ -1317,7 +1485,155 @@ class ChatBridge:
         if kind == "ERR" and len(parts) >= 3:
             self._add_event("status", {"text": parts[2]})
 
+    def _run_ble(self) -> None:
+        try:
+            from bleak import BleakClient, BleakScanner
+        except ImportError:
+            self._mark_disconnected("BLE needs bleak: python3 -m pip install bleak")
+            self._wait_before_retry(2.0)
+            return
+        asyncio.run(self._run_ble_async(BleakScanner, BleakClient))
+
+    async def _run_ble_async(self, scanner_cls: Any, client_cls: Any) -> None:
+        self._ble_loop = asyncio.get_running_loop()
+        self._ble_line_buffer = ""
+        try:
+            while not self._stop.is_set() and not self._reconnect.is_set() and self.transport == "ble":
+                if not self.ble_pair_code:
+                    self._mark_disconnected("Enter the BLE code shown on the badge")
+                    await asyncio.sleep(1.0)
+                    continue
+                self.status = "Scanning for BLE badge"
+                self.port = self._transport_port_label()
+                self._add_event("state", self.state())
+                device = await self._find_ble_device(scanner_cls)
+                if device is None:
+                    self._mark_disconnected("No BLE badge found")
+                    await asyncio.sleep(1.5)
+                    continue
+                if self._reconnect.is_set() or self.transport != "ble":
+                    return
+                await self._connect_ble_device(client_cls, device)
+        finally:
+            self._ble_client = None
+            self._ble_loop = None
+
+    async def _find_ble_device(self, scanner_cls: Any) -> Any | None:
+        if self.ble_address:
+            return await scanner_cls.find_device_by_address(self.ble_address, timeout=6.0)
+        devices = await scanner_cls.discover(timeout=6.0)
+        target = self.ble_name.strip()
+        fallback_prefix = BLE_DEFAULT_NAME
+        for device in devices:
+            name = (getattr(device, "name", "") or "").strip()
+            if target and name == target:
+                return device
+        for device in devices:
+            name = (getattr(device, "name", "") or "").strip()
+            if target and target.endswith("-") and name.startswith(target):
+                return device
+            if not target and name.startswith(fallback_prefix):
+                return device
+            if target == fallback_prefix and name.startswith(fallback_prefix):
+                return device
+        return None
+
+    async def _connect_ble_device(self, client_cls: Any, device: Any) -> None:
+        name = (getattr(device, "name", "") or "").strip()
+        address = getattr(device, "address", "")
+        self.port = "BLE " + (name or address or "badge")
+        self.status = "BLE connecting"
+        self.connected = False
+        self.alias = ""
+        self._add_event("state", self.state())
+
+        async with client_cls(device) as client:
+            if self._reconnect.is_set() or self.transport != "ble":
+                return
+            self._ble_client = client
+            self.status = "BLE connected. Pairing..."
+            self._add_event("status", {"text": self.status})
+            self._add_event("state", self.state())
+            await client.start_notify(BLE_TX_CHAR_UUID, self._handle_ble_notification)
+            if self._reconnect.is_set() or self.transport != "ble":
+                return
+            await self._ble_write_line_async(f"PAIR\t{self.ble_pair_code}")
+            await self._ble_write_line_async("PING")
+            await self._ble_write_line_async(f"TOPIC\t{self.topic}")
+            await self._ble_write_line_async(f"GAP\t{self.packet_interval_s:.2f}")
+            while (
+                not self._stop.is_set()
+                and not self._reconnect.is_set()
+                and self.transport == "ble"
+                and client.is_connected
+            ):
+                await asyncio.sleep(0.2)
+            try:
+                await client.stop_notify(BLE_TX_CHAR_UUID)
+            except Exception:
+                pass
+        self._ble_client = None
+        if not self._reconnect.is_set() and self.transport == "ble":
+            self._mark_disconnected("BLE disconnected")
+
+    def _handle_ble_notification(self, _sender: Any, data: bytearray) -> None:
+        self._ble_line_buffer += bytes(data).decode("utf-8", "replace")
+        while "\n" in self._ble_line_buffer:
+            line, self._ble_line_buffer = self._ble_line_buffer.split("\n", 1)
+            line = line.strip()
+            if line:
+                self._handle_serial_line(line)
+
+    async def _ble_write_line_async(self, line: str) -> None:
+        client = self._ble_client
+        if client is None or not client.is_connected:
+            raise RuntimeError("Badge BLE is not connected")
+        payload = (line + "\n").encode("utf-8")
+        for offset in range(0, len(payload), BLE_WRITE_CHUNK_BYTES):
+            await client.write_gatt_char(
+                BLE_RX_CHAR_UUID,
+                payload[offset : offset + BLE_WRITE_CHUNK_BYTES],
+                response=True,
+            )
+            await asyncio.sleep(0.03)
+
+    def _close_current_transport(self) -> None:
+        with self._serial_lock:
+            serial_conn = self._serial
+            self._serial = None
+        if serial_conn is not None:
+            try:
+                serial_conn.close()
+            except Exception:
+                pass
+        loop = self._ble_loop
+        client = self._ble_client
+        if loop is not None and client is not None:
+            try:
+                future = asyncio.run_coroutine_threadsafe(client.disconnect(), loop)
+                future.result(timeout=3)
+            except Exception:
+                pass
+        self._ble_client = None
+
+    def _transport_port_label(self) -> str:
+        if self.transport == "ble":
+            if self.ble_address:
+                return "BLE " + self.ble_address
+            return "BLE " + (self.ble_name or BLE_DEFAULT_NAME)
+        return self.preferred_port or "auto"
+
+    def _wait_before_retry(self, seconds: float) -> None:
+        self._reconnect.wait(seconds)
+
     def _write_line(self, line: str) -> None:
+        if self.transport == "ble":
+            loop = self._ble_loop
+            if loop is None or self._ble_client is None:
+                raise RuntimeError("Badge BLE is not connected")
+            future = asyncio.run_coroutine_threadsafe(self._ble_write_line_async(line), loop)
+            future.result(timeout=5)
+            return
         with self._serial_lock:
             if self._serial is None:
                 raise RuntimeError("Badge serial port is not connected")
@@ -1374,6 +1690,24 @@ def _parse_topic(value: str, fallback: int) -> int:
         return max(1, min(99, int(value)))
     except ValueError:
         return fallback
+
+
+def _parse_transport(value: str) -> str:
+    clean = (value or "usb").strip().lower()
+    if clean in {"serial", "usb"}:
+        return "usb"
+    if clean == "ble":
+        return "ble"
+    raise ValueError("transport must be usb or ble")
+
+
+def _clean_pair_code(value: str) -> str:
+    code = "".join(char for char in str(value or "") if char.isdigit())
+    if not code:
+        return ""
+    if len(code) != 6:
+        raise ValueError("BLE pair code must be 6 digits")
+    return code
 
 
 def _clamp_packet_interval(value: float) -> float:
@@ -1446,6 +1780,15 @@ class ChatHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/settings":
                 packet_gap = self.server.bridge.set_packet_interval(payload.get("packet_gap", DEFAULT_PACKET_SEND_INTERVAL_S))
                 self._send_json({"ok": True, "packet_gap": packet_gap})
+                return
+            if parsed.path == "/api/transport":
+                self.server.bridge.set_transport(
+                    payload.get("transport", "usb"),
+                    payload.get("pair_code", ""),
+                    payload.get("ble_name", ""),
+                    payload.get("ble_address", ""),
+                )
+                self._send_json({"ok": True, "state": self.server.bridge.state()})
                 return
             self._send_error(HTTPStatus.NOT_FOUND, "Not found")
         except Exception as exc:
@@ -1547,6 +1890,10 @@ class ChatHandler(BaseHTTPRequestHandler):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Local web UI for Hackaday Europe badge chat.")
     parser.add_argument("port", nargs="?", help="Serial port, for example /dev/ttyACM0")
+    parser.add_argument("--transport", choices=["usb", "serial", "ble"], default="usb", help="Badge connection transport, default usb")
+    parser.add_argument("--ble-name", default=BLE_DEFAULT_NAME, help="BLE badge name or prefix, default LC26-")
+    parser.add_argument("--ble-address", default="", help="BLE address to connect to")
+    parser.add_argument("--ble-code", default="", help="6 digit BLE code shown on the badge")
     parser.add_argument("-t", "--topic", type=int, default=1, help="Chat topic 1-99, default 1")
     parser.add_argument(
         "--packet-gap",
@@ -1570,7 +1917,20 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     local_only = args.host in LOOPBACK_HOSTS and not args.allow_lan
-    bridge = ChatBridge(args.port, args.topic, auto_port=True, packet_interval_s=args.packet_gap)
+    try:
+        bridge = ChatBridge(
+            args.port,
+            args.topic,
+            auto_port=True,
+            packet_interval_s=args.packet_gap,
+            transport=args.transport,
+            ble_name=args.ble_name,
+            ble_address=args.ble_address,
+            ble_pair_code=args.ble_code,
+        )
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     bridge.start()
 
     try:
