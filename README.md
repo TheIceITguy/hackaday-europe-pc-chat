@@ -18,7 +18,16 @@ From this repo:
 
 ```sh
 python3 -m pip install -r requirements.txt
-sudo chmod a+rw /dev/ttyACM0
+sudo install -m 0644 udev/99-hackaday-europe-badge.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger --subsystem-match=tty --action=change
+```
+
+Unplug and replug the badge if the serial permissions do not update immediately.
+
+Then copy the bridge app to the badge:
+
+```sh
 mpremote connect /dev/ttyACM0 cp badge_apps/pc_chat_bridge.py :/apps/pc_chat_bridge.py
 mpremote connect /dev/ttyACM0 reset
 ```
@@ -75,4 +84,5 @@ Commands:
 
 - Keep `PC Chat` open on the badge while using the computer companion.
 - Your nick is the badge `alias`; the stock chat payload has a 10-character alias field.
-- If you get `Permission denied` for `/dev/ttyACM0`, run `sudo chmod a+rw /dev/ttyACM0` after plugging in the badge.
+- On Linux, the included udev rule should make the badge serial port writable automatically after every replug.
+- If you still get `Permission denied` for `/dev/ttyACM0`, replug the badge and check that `/etc/udev/rules.d/99-hackaday-europe-badge.rules` exists.
